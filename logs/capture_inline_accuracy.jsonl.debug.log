@@ -1,0 +1,55 @@
+[init] addr=0x101000 log=/home/matsu/catalog/library/nginx/1.25/vmi_syscall_monitor/logs/capture_inline_accuracy.jsonl
+[vm_state_change] running=1 state=9
+[arm] attempt 1/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 1/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 2/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 2/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 3/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 3/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 4/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 4/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 5/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 5/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 6/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 6/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 7/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 7/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 8/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 8/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 9/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 9/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 10/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 10/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 11/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 11/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 12/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 12/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 13/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 13/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 14/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 14/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 15/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 15/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 16/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 16/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] first real hit observed -- breakpoint confirmed live, stopping periodic re-verification
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=288
+[hit] cpu=0 rip=0x101000 rax=233
+[hit] cpu=0 rip=0x101000 rax=232
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=45
+[hit] cpu=0 rip=0x101000 rax=257
+[hit] cpu=0 rip=0x101000 rax=262
+[hit] cpu=0 rip=0x101000 rax=17
+[hit] cpu=0 rip=0x101000 rax=20
+[hit] cpu=0 rip=0x101000 rax=54
+[hit] cpu=0 rip=0x101000 rax=232
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=45
+[hit] cpu=0 rip=0x101000 rax=3
+[hit] cpu=0 rip=0x101000 rax=232
+[vm_state_change] running=0 state=11
