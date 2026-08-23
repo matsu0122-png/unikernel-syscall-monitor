@@ -1,0 +1,143 @@
+[init] addr=0x101000 log=/home/matsu/catalog/library/nginx/1.25/vmi_syscall_monitor/logs/realtime_ctrlc.jsonl
+[vm_state_change] running=1 state=9
+[arm] attempt 1/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 1/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 2/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 2/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 3/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 3/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 4/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 4/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 5/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 5/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 6/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 6/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 7/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 7/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 8/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 8/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 9/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 9/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 10/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 10/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 11/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 11/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 12/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 12/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 13/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 13/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 14/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 14/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 15/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 15/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 16/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 16/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 17/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 17/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 18/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 18/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 19/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 19/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 20/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 20/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 21/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 21/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 22/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 22/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 23/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 23/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 24/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 24/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 25/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 25/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 26/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 26/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 27/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 27/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 28/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 28/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 29/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 29/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 30/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 30/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 31/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 31/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 32/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 32/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 33/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 33/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 34/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 34/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 35/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 35/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 36/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 36/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 37/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 37/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 38/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 38/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 39/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 39/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 40/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 40/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 41/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 41/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 42/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 42/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 43/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 43/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 44/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 44/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 45/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 45/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 46/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 46/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 47/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 47/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 48/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 48/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 49/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 49/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 50/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 50/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 51/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 51/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 52/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 52/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 53/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 53/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 54/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 54/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 55/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 55/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 56/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 56/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 57/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 57/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 58/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 58/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 59/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 59/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[arm] attempt 60/100: re-arming (remove-then-insert) at 0x101000
+[arm] attempt 60/100: readback=0xcc confirmed -- still re-verifying until a real hit lands
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] first real hit observed -- breakpoint confirmed live, stopping periodic re-verification
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=288
+[hit] cpu=0 rip=0x101000 rax=233
+[hit] cpu=0 rip=0x101000 rax=232
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=45
+[hit] cpu=0 rip=0x101000 rax=257
+[hit] cpu=0 rip=0x101000 rax=262
+[hit] cpu=0 rip=0x101000 rax=17
+[hit] cpu=0 rip=0x101000 rax=20
+[hit] cpu=0 rip=0x101000 rax=54
+[hit] cpu=0 rip=0x101000 rax=232
+[hit] cpu=0 rip=0x101000 rax=96
+[hit] cpu=0 rip=0x101000 rax=228
+[hit] cpu=0 rip=0x101000 rax=45
+[hit] cpu=0 rip=0x101000 rax=3
+[hit] cpu=0 rip=0x101000 rax=232
+[vm_state_change] running=0 state=11
