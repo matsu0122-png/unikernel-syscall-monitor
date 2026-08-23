@@ -1,0 +1,140 @@
+{"ts": 1785136912.4888623, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1387783}
+{"ts": 1785136912.4962823, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 1143284}
+{"ts": 1785136912.502801, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 1165028}
+{"ts": 1785136912.5088344, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 831074}
+{"ts": 1785136912.5143867, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 1079476}
+{"ts": 1785136912.5205145, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 979977}
+{"ts": 1785136912.5264688, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 1165503}
+{"ts": 1785136912.5332286, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 1120215}
+{"ts": 1785136912.5395665, "num": 257, "syscall": "openat", "args": ["0xffffff9c", "0x40121c314", "0x800", "0x0"], "handler_latency_ns": 988104}
+{"ts": 1785136912.5460215, "num": 262, "syscall": "newfstatat", "args": ["0x8", "0x1000bf8dd5", "0x1000182480", "0x1000"], "handler_latency_ns": 1051604}
+{"ts": 1785136912.5524008, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 875193}
+{"ts": 1785136912.55841, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 1159556}
+{"ts": 1785136912.5649695, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 1185291}
+{"ts": 1785136912.570959, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 834978}
+{"ts": 1785136912.5769973, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1052219}
+{"ts": 1785136912.5824466, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 826184}
+{"ts": 1785136912.588331, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 1026362}
+{"ts": 1785136912.5945272, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 1016888}
+{"ts": 1785136912.6007416, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 1018142}
+{"ts": 1785136914.7909489, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1263790}
+{"ts": 1785136914.7976298, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 991058}
+{"ts": 1785136914.8039963, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 1212198}
+{"ts": 1785136914.8100765, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 953152}
+{"ts": 1785136914.8158808, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 988005}
+{"ts": 1785136914.821998, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1007509}
+{"ts": 1785136914.8282392, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 1005513}
+{"ts": 1785136914.8339522, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 919828}
+{"ts": 1785136914.8391438, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 1015172}
+{"ts": 1785136914.844495, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 844794}
+{"ts": 1785136914.850406, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 1028207}
+{"ts": 1785136914.8562243, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 940654}
+{"ts": 1785136914.8621364, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1031650}
+{"ts": 1785136914.8680363, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 881054}
+{"ts": 1785136914.8736422, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 965304}
+{"ts": 1785136914.879393, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 831041}
+{"ts": 1785136914.885835, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 1046536}
+{"ts": 1785136920.2838502, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1332174}
+{"ts": 1785136920.2903845, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 1112588}
+{"ts": 1785136920.2968144, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 1152054}
+{"ts": 1785136920.3036013, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 1143600}
+{"ts": 1785136920.3096778, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 1041426}
+{"ts": 1785136920.3154066, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 919493}
+{"ts": 1785136920.3218818, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 1031938}
+{"ts": 1785136920.3280144, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 1033220}
+{"ts": 1785136920.3342712, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 1038743}
+{"ts": 1785136920.3408124, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 1032137}
+{"ts": 1785136920.3465693, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 847158}
+{"ts": 1785136920.3527834, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 1008417}
+{"ts": 1785136920.3585722, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 819899}
+{"ts": 1785136920.364876, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 948730}
+{"ts": 1785136920.370582, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 841144}
+{"ts": 1785136920.3771508, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 1052745}
+{"ts": 1785136920.3835607, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 1035094}
+{"ts": 1785136924.1128774, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 290792}
+{"ts": 1785136924.11388, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 139816}
+{"ts": 1785136924.1146085, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 132657}
+{"ts": 1785136924.1153674, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 138039}
+{"ts": 1785136924.1161416, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 137056}
+{"ts": 1785136924.1168766, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 133755}
+{"ts": 1785136924.1176097, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 133142}
+{"ts": 1785136924.1183538, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 137800}
+{"ts": 1785136924.1191099, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 135231}
+{"ts": 1785136924.1199126, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 159070}
+{"ts": 1785136924.120935, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 175710}
+{"ts": 1785136924.1219826, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 148336}
+{"ts": 1785136924.1228065, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 141613}
+{"ts": 1785136924.1236084, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 140683}
+{"ts": 1785136924.1244478, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 159320}
+{"ts": 1785136924.1254282, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 174427}
+{"ts": 1785136924.1263778, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 155438}
+{"ts": 1785136924.6929042, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 326467}
+{"ts": 1785136924.6938565, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 134929}
+{"ts": 1785136924.694642, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 126443}
+{"ts": 1785136924.6954143, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 131772}
+{"ts": 1785136924.6961584, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 131752}
+{"ts": 1785136924.6968782, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 128743}
+{"ts": 1785136924.6975975, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 128094}
+{"ts": 1785136924.698316, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 132680}
+{"ts": 1785136924.6990516, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 129125}
+{"ts": 1785136924.6997752, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 133179}
+{"ts": 1785136924.7007718, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 255323}
+{"ts": 1785136924.7017193, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 156967}
+{"ts": 1785136924.7025337, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 144088}
+{"ts": 1785136924.7033174, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 143184}
+{"ts": 1785136924.7041152, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 146037}
+{"ts": 1785136924.7049005, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 139605}
+{"ts": 1785136924.7058036, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 154186}
+{"ts": 1785136925.1949234, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 326664}
+{"ts": 1785136925.195867, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 145024}
+{"ts": 1785136925.1966283, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 136111}
+{"ts": 1785136925.1973853, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 134987}
+{"ts": 1785136925.1981392, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 133145}
+{"ts": 1785136925.1988735, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 131368}
+{"ts": 1785136925.1995895, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 130526}
+{"ts": 1785136925.2003524, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 144632}
+{"ts": 1785136925.2011542, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 141009}
+{"ts": 1785136925.2019277, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 140574}
+{"ts": 1785136925.2028809, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 168021}
+{"ts": 1785136925.2037148, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 145134}
+{"ts": 1785136925.2046423, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 143227}
+{"ts": 1785136925.205467, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 148878}
+{"ts": 1785136925.2063017, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 153151}
+{"ts": 1785136925.207134, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 145144}
+{"ts": 1785136925.2080197, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 150708}
+{"ts": 1785137483.9080207, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 1457122}
+{"ts": 1785137483.9156618, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 953945}
+{"ts": 1785137483.9222848, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 1042805}
+{"ts": 1785137483.9281938, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 904300}
+{"ts": 1785137483.9343863, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 1065456}
+{"ts": 1785137483.9401214, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 841496}
+{"ts": 1785137483.9459198, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 987493}
+{"ts": 1785137483.9514806, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 955409}
+{"ts": 1785137483.957782, "num": 257, "syscall": "openat", "args": ["0xffffff9c", "0x40121c314", "0x800", "0x0"], "handler_latency_ns": 1142324}
+{"ts": 1785137483.9645603, "num": 262, "syscall": "newfstatat", "args": ["0x8", "0x1000bf8dd5", "0x1000182480", "0x1000"], "handler_latency_ns": 1185524}
+{"ts": 1785137483.970617, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 1072196}
+{"ts": 1785137483.9772747, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 979540}
+{"ts": 1785137483.983355, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 965205}
+{"ts": 1785137483.9898129, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 1228167}
+{"ts": 1785137483.9963276, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 929567}
+{"ts": 1785137484.002546, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 997675}
+{"ts": 1785137484.0088398, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 1085696}
+{"ts": 1785137484.014784, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 1031588}
+{"ts": 1785137484.0207622, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 1039931}
+{"ts": 1785137490.3249948, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 253363}
+{"ts": 1785137490.325906, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 132218}
+{"ts": 1785137490.3266506, "num": 288, "syscall": "accept4", "args": ["0x5", "0x1000182870", "0x100018286c", "0x800"], "handler_latency_ns": 132355}
+{"ts": 1785137490.3273873, "num": 233, "syscall": "epoll_ctl", "args": ["0x3", "0x1", "0x7", "0x10001827bc"], "handler_latency_ns": 129271}
+{"ts": 1785137490.3281348, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xea60"], "handler_latency_ns": 128422}
+{"ts": 1785137490.3288493, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 125046}
+{"ts": 1785137490.3296692, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 151952}
+{"ts": 1785137490.3306892, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 154630}
+{"ts": 1785137490.3315325, "num": 17, "syscall": "pread64", "args": ["0x8", "0x40127b860", "0x264", "0x0"], "handler_latency_ns": 131555}
+{"ts": 1785137490.3323622, "num": 20, "syscall": "writev", "args": ["0x7", "0x1000181fb0", "0x2"], "handler_latency_ns": 130169}
+{"ts": 1785137490.3332496, "num": 54, "syscall": "setsockopt", "args": ["0x7", "0x6", "0x1", "0x10001827d4", "0x4"], "handler_latency_ns": 132469}
+{"ts": 1785137490.3341208, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0x2710"], "handler_latency_ns": 128727}
+{"ts": 1785137490.334867, "num": 96, "syscall": "gettimeofday", "args": ["0x1000182860", "0x0"], "handler_latency_ns": 125384}
+{"ts": 1785137490.335584, "num": 228, "syscall": "clock_gettime", "args": ["0x1", "0x10001828b0"], "handler_latency_ns": 124564}
+{"ts": 1785137490.3363104, "num": 45, "syscall": "recvfrom", "args": ["0x7", "0x401213300", "0x400", "0x0", "0x0", "0x0"], "handler_latency_ns": 130205}
+{"ts": 1785137490.337033, "num": 3, "syscall": "close", "args": ["0x7"], "handler_latency_ns": 124849}
+{"ts": 1785137490.3377788, "num": 232, "syscall": "epoll_wait", "args": ["0x3", "0x401221ab0", "0x200", "0xffffffff"], "handler_latency_ns": 127109}

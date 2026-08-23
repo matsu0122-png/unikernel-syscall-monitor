@@ -1,0 +1,14 @@
+Reading symbols from ../.unikraft/build/nginx_qemu-x86_64.dbg...
+Remote debugging using localhost:1234
+ukplat_lcpu_halt_irq ()
+    at /home/matsu/catalog/library/nginx/1.25/.unikraft/unikraft/plat/kvm/x86/lcpu.c:65
+65		local_irq_disable();
+Breakpoint 1 at 0x101000: file /home/matsu/catalog/library/nginx/1.25/.unikraft/unikraft/plat/common/x86/syscall.S, line 47.
+[monitor.py] logging to /home/matsu/catalog/library/nginx/1.25/vmi_syscall_monitor/logs/capture.jsonl
+[monitor.py] breakpoint armed, auto-continuing on every hit
+Traceback (most recent call last):
+  File "monitor.py", line 125, in <module>
+    gdb.execute("continue")
+gdb.error: Remote connection closed
+(gdb) 
+quit
