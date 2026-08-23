@@ -38,4 +38,23 @@ void vmi_monitor_breakpoint_hit(X86CPU *cpu);
  * readback verification), and transitions the cpu back to VMI_NORMAL. */
 void vmi_monitor_step_complete(CPUState *cs);
 
+/*
+ * Phase 7: called from hw/nvram/fw_cfg.c's fw_cfg_dma_transfer(), exactly
+ * once, right after the FW_CFG_KERNEL_DATA transfer that lands Unikraft's
+ * kernel image in guest RAM has finished -- i.e. before the guest (the
+ * multiboot option ROM) is allowed to run another instruction. This is
+ * the one point in boot where writing 0xcc to vmi_monitor_addr() is
+ * guaranteed not to be silently overwritten later (see
+ * docs/phase7_boot_sync_investigation.md for why). No-op if the monitor
+ * is disabled or a breakpoint is already confirmed live (via this path
+ * or a real hit). `cs` is the vCPU that triggered the fw_cfg DMA access
+ * (current_cpu at the fw_cfg.c call site).
+ *
+ * fw_cfg.c is generic/cross-architecture, so it forward-declares this
+ * function itself with an `extern` rather than including this
+ * x86/kvm-specific header (which pulls in X86CPU/CPUX86State) -- keep
+ * this declaration's signature in sync with that forward declaration.
+ */
+void vmi_monitor_kernel_loaded(CPUState *cs);
+
 #endif /* VMI_SYSCALL_MONITOR_H */

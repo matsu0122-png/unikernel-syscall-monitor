@@ -1,0 +1,275 @@
+VMI syscall monitor -- Phase 7までの変更内容とVMI実現方法 まとめ
+====================================================================
+
+このプロジェクトは、Unikraft上で動くnginxのシステムコールを、ゲスト側
+(Unikraft/nginx)には一切手を加えず、ホスト側(QEMU/KVM)だけから監視
+する研究ツールです。この文書は、Phase 6・Phase 7で実際にQEMUへ加えた
+変更の全体像と、最終的に「VMIがどう実現されているか」を1つにまとめた
+ものです。
+
+
+1. プロジェクトの目的(おさらい)
+====================================
+
+  ホスト(このLinuxマシン)
+    └─ QEMU/KVM (ハイパーバイザ)
+         └─ ゲスト(Unikraft、1つの仮想マシン)
+              └─ nginx (ゲストの中で動くWebサーバー)
+                   └─ syscall命令 → _ukplat_syscall (ゲスト内のsyscall入口)
+
+「nginxが今どんなsyscall(recvfrom, openat, accept4など)を呼んだか」を、
+ゲストの中を一切改造せず、ホスト側から観測する。これがVMI
+(Virtual Machine Introspection)の目的です。
+
+
+2. VMIの実現方法(全体の仕組み)
+====================================
+
+## 2.1 基本トリック: int3(ソフトウェアブレークポイント)
+
+nginxがsyscallを呼ぶと、CPUは必ず`_ukplat_syscall`という決まった場所
+(アドレス0x101000)にジャンプします。ここの先頭1バイトを、本来の命令
+ではなく`0xCC`(int3命令)に書き換えておくと、CPUがそこを実行するたびに
+「#BP(ブレークポイント例外)」が発生します。
+
+あらかじめKVMに「#BPが起きたらゲスト内で処理させず、ホストに知らせろ」
+(`KVM_SET_GUEST_DEBUG`)と設定しておくと、この例外はVM-Exit(ゲストの
+実行がホストへ戻ってくること)として報告されます。この瞬間、CPUのレジ
+スタ(rax=syscall番号、rdi/rsi/rdx/r10/r8/r9=引数)がそのまま読み取れる
+ので、「今何のsyscallが呼ばれたか」が分かります。
+
+## 2.2 Phase 6より前(Phase 1〜4): GDBを使った実現方法
+
+  Guest → int3 → KVM → QEMU gdbstub → RSP → GDB → monitor.py(Python)
+
+ホスト側で0xCCを設置する処理・レジスタ読み取り処理そのものは、外部の
+`gdb`というデバッガに丸投げしていました。QEMUに内蔵の「gdbstub」機能
+が、TCPソケット越しにgdbと通信(RSPというテキストプロトコル)し、gdbが
+Pythonスクリプト(monitor.py)を実行してログを書いていました。
+
+この方式は正確でしたが、1回のsyscallヒットにつき「QEMU→別プロセスの
+gdbへネットワーク通信→Pythonで処理→また戻す」という重い経路を通るため、
+性能が監視なし時の1%程度(約99%減)まで落ち込みました。
+
+## 2.3 Phase 6: GDBを排除し、QEMU自身の中で完結させる
+
+  変更前: Guest → int3 → KVM → QEMU → gdbstub → RSP → GDB → Python
+  変更後: Guest → int3 → KVM → QEMU → QEMU内蔵のVMI監視処理
+
+QEMU自身のソースコード(`target/i386/kvm/kvm.c`)の中にある
+`kvm_handle_debug()`という関数に、「これは自分が仕掛けたint3か?」を
+判定する分岐を追加しました。該当すればその場でレジスタを読み、ログに
+書き、ブレークポイントを再設置して、ゲストの実行を止めずに継続させます。
+gdb・ネットワーク通信・Pythonは一切使いません。
+
+結果、GDB方式(約130 req/s)に対し、約1,500 req/sまで改善(約11倍)し
+ました。ただし監視なしのbaseline(約15,000 req/s)と比べると依然として
+約90%遅く、これはint3方式そのものが持つ本質的なコスト(1ヒットにつき
+最低2回のVM-Exitが必要な「step-over」処理)によるものです。
+
+## 2.4 Phase 7: ブート時の最初のsyscallから確実に取得する
+
+Phase 6では、VMを起動してから「0.2秒ごとにブレークポイントを設置し
+直す」というポーリング方式で、ブート中のどこかのタイミングで運良く
+成功するのを待っていました。そのため、ブート最初期のsyscallを取りこぼ
+すことがありました。
+
+Phase 7では、「なぜ最初に設置した0xCCが後から消えることがあるのか」を
+実際のQEMUソースコードを読んで突き止めました。
+
+  Unikraftのカーネルイメージは multiboot形式で起動されており、QEMUは
+  カーネルの中身を一旦 fw_cfg という仮想デバイスに退避するだけで、
+  実際にゲストのメモリへ書き込むのは、ゲスト側の小さなoption ROMが
+  1回だけ出すDMA転送要求を受けて、QEMU自身の`fw_cfg_dma_transfer()`
+  という関数(hw/nvram/fw_cfg.c)が行っている
+
+ということが分かりました。つまり、この「1回だけ起きる、カーネルを
+ゲストメモリへ書き込む瞬間」より前に0xCCを置いてしまうと、後でこの
+転送処理によって上書きされて消えてしまう、というのが真の原因でした。
+
+そこで、この転送が完了した直後(まだゲストへ制御を戻す前)に0xCCを
+設置するよう変更しました。この地点は「これより後、二度と上書きされ
+ない」ことが保証された、ただ1点しかないタイミングです。
+
+  Phase 6: VMを動かしながら0.2秒ごとにint3を再設置 → 運が良ければ最初から取れる
+  Phase 7: カーネルロード完了の瞬間を捉えて1回だけint3を設置 → 確実に最初から取れる
+
+10回連続でVMを起動し直すテストを行い、**10/10回とも完全に同一の結果**
+(289件のイベント、先頭は必ず`brk`)を確認しました。さらに、Unikraft
+自身の`CONFIG_LIBSYSCALL_SHIM_STRACE`機能で得られる「本当の正解」ログ
+と比較し、**先頭(0件目)から134件連続で完全一致**することも確認して
+います。
+
+
+3. 最終的な1件のsyscallが記録されるまでの全体フロー
+======================================================
+
+  nginx が recvfrom() を呼ぶ
+   ↓
+  CPUが syscall 命令を実行(LSTARレジスタで登録された飛び先へジャンプ)
+   ↓
+  _ukplat_syscall (0x101000)。先頭1バイトが 0xCC に書き換えてある
+   ↓
+  0xCC = int3 命令として実行される
+   ↓
+  #BP例外発生
+   ↓
+  VM-Exit (KVM_SET_GUEST_DEBUG設定により、ゲスト内処理されずホストへ)
+   ↓
+  KVM (Linuxカーネル) → QEMU (kvm_cpu_exec, KVM_EXIT_DEBUG)
+   ↓
+  kvm_arch_handle_exit() → kvm_handle_debug()  [target/i386/kvm/kvm.c]
+   ↓
+  「これは自分の監視アドレスか? 状態はNORMALか?」を判定
+   ↓
+  vmi_monitor_breakpoint_hit()  [vmi-syscall-monitor.c]
+   ↓
+  レジスタ同期(cpu_synchronize_state) → rax等を読む
+   ↓
+  syscallテーブルで番号→名前解決(vmi-syscall-table.h、185エントリ)
+   ↓
+  JSONLへ1行書き込み ({"syscall": "recvfrom", "args": [...] , ...})
+   ↓
+  元の命令に戻す → single-step(1命令だけ実行) → もう一度VM-Exit
+   ↓
+  int3を再設置 → readbackで0xCC確認
+   ↓
+  ゲスト実行再開(recvfromが本当に実行される)
+
+そしてこの一連の仕組み全体が「いつから」有効になっているかを保証する
+のがPhase 7で、以下の初期化フローが1回だけ実行されます。
+
+  QEMU起動(-Sで一時停止)
+   ↓
+  kraftkitがQMPで再開を指示
+   ↓
+  SeaBIOS POST → option ROM実行フェーズ
+   ↓
+  multiboot option ROMが fw_cfg へDMA転送要求(FW_CFG_KERNEL_DATA)
+   ↓
+  fw_cfg_dma_transfer() [hw/nvram/fw_cfg.c] がゲストRAMへ実際に書き込む
+   ↓
+  ★ vmi_monitor_kernel_loaded() を呼ぶ(新規フック)
+   ↓
+  int3設置 → readbackで0xCC確認 → まだゲストには戻していない
+   ↓
+  ここでようやくゲストへ制御を戻す
+   ↓
+  Unikraftの実行開始 → 最初のsyscall(brk)から確実にヒット
+
+
+4. 変更したファイル一覧(Phase 6 + Phase 7)
+==============================================
+
+すべて `vmi_syscall_monitor/qemu_patch/` 以下にまとめてあります
+(ビルド先は `/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/`)。
+ゲスト側(Unikraft/nginx)は一切変更していません。
+
+  qemu_patch/
+  ├── README.md                                (ビルド・実行手順)
+  ├── 0001-kvm.c.diff                           (Phase 6, 既存ファイルへの変更)
+  ├── 0002-meson.build.diff                     (Phase 6, ビルド登録)
+  ├── 0003-fw_cfg.c.diff                         (Phase 7, 既存ファイルへの変更)
+  └── target/i386/kvm/
+      ├── vmi-syscall-monitor.c                 (Phase 6で新規作成、Phase 7で拡張)
+      ├── vmi-syscall-monitor.h                 (同上)
+      └── vmi-syscall-table.h                   (Phase 6, syscall_table.pyから自動生成)
+
+### target/i386/kvm/kvm.c (既存ファイル、Phase 6のみ変更・Phase 7は無変更)
+  - `kvm_arch_init()` の先頭に `vmi_monitor_init()` を1行追加
+  - `kvm_handle_debug()` に2箇所の分岐を追加:
+    (1) int3ヒット時、自分の監視アドレス・NORMAL状態なら
+        `vmi_monitor_breakpoint_hit()` を呼びEXCP_DEBUGを返さない
+    (2) single-step完了時、STEPPING状態なら
+        `vmi_monitor_step_complete()` を呼び同様に処理
+  - 変更量: 40行追加・3行削除のみ
+
+### hw/nvram/fw_cfg.c (既存ファイル、Phase 7で新規変更)
+  - `vmi_monitor_kernel_loaded(CPUState *cs)` のextern宣言を追加
+    (x86/kvm専用ヘッダを汎用ファイルに持ち込まないための前方宣言)
+  - `fw_cfg_dma_transfer()` の既存コピーループ完了直後に、
+    「今の転送がFW_CFG_KERNEL_DATAで、かつ全部読み終わったか」を判定し
+    該当すれば `vmi_monitor_kernel_loaded(current_cpu)` を1回呼ぶ
+
+### target/i386/kvm/vmi-syscall-monitor.c (新規ファイル、Phase 6作成→Phase 7拡張)
+  主な関数:
+  - `vmi_monitor_init()`      : 環境変数(VMI_MONITOR_ADDR/LOG)を読み初期化
+  - `vmi_arm_once()`          : 1回分の「remove→insert→readback確認」処理
+                                (Phase 7でPhase 6のコードから共通処理として抽出、重複実装なし)
+  - `vmi_try_arm()`           : Phase 6由来。0.2秒ごとに`vmi_arm_once()`を
+                                呼ぶポーリング方式。Phase 7では「fallback」
+                                として維持(boot-syncが成功したら即停止)
+  - `vmi_monitor_kernel_loaded()` : Phase 7新規。fw_cfg転送完了直後に1回だけ
+                                呼ばれ、`vmi_arm_once()`でその場で設置・確認する。
+                                BQL(QEMUの排他ロック)を必要なら自分で取得する
+  - `vmi_monitor_breakpoint_hit()` : int3ヒット時の処理(レジスタ読取・ログ・
+                                step-over開始)
+  - `vmi_monitor_step_complete()`  : single-step完了時の処理(再設置・検証)
+  - NORMAL / STEPPING の状態を CPUState ごとに管理(複数vCPUでも破綻しない)
+
+### target/i386/kvm/vmi-syscall-monitor.h (新規ファイル)
+  上記関数の宣言。`vmi_monitor_kernel_loaded()`はPhase 7で追加。
+
+### target/i386/kvm/vmi-syscall-table.h (新規ファイル)
+  既存の `syscall_table.py` (185エントリ) から自動生成した、
+  syscall番号→名前→引数個数のC言語版テーブル。
+
+### プロジェクト側スクリプト(vmi_syscall_monitor/直下、ゲストとは無関係)
+  - `run_capture_inline.py` : VM起動・監視・停止のオーケストレータ。
+    Ctrl-Cまで待機するinteractiveモード、リアルタイム端末表示、
+    `--quiet`/`--show-after-ready`オプションなどをPhase 6後に追加
+  - `bench_overhead_inline.py` : baseline / inline監視 / GDB監視の3条件比較
+
+これらのPythonスクリプトはQEMU自体を操作するだけで、ゲストには一切
+触れていません。
+
+
+5. 検証結果のまとめ(数値)
+============================
+
+  項目                          結果
+  -----------------------------------------------------------------
+  正確性(GDB版と直接比較)        19イベント完全一致(syscall名・引数とも)
+  性能: baseline(監視なし)       約15,267 req/s
+  性能: Phase 6/7 inline監視     約1,400〜1,700 req/s (baseline比 約-90%)
+  性能: 従来のGDB/RSP監視        約132 req/s (baseline比 約-99%)
+  Phase 7 再現性                 10/10回、完全に同一の結果(289イベント、先頭は必ずbrk)
+  Phase 7 ground truth比較       offset=0から134/134件、完全一致
+  Phase 7 起因の性能劣化         検出できず(Phase 6と同範囲)
+
+
+6. 既知の制約・今後の課題
+============================
+
+  - `_ukplat_syscall`のアドレス(0x101000)はビルドごとに変わりうるため、
+    毎回 `nm` で実アドレスを確認する運用(ハードコードしない)
+  - Phase 7のfw_cfgフックは、この環境のブート方式(multiboot形式+
+    fw_cfg DMA有効)に依存している。将来Unikraft/Kraftfileのブート方式
+    が変われば、同じ手法(実ソースを読んで書き込み箇所を特定する)を
+    再度行う必要がある
+  - フック呼び出し時にBQL(QEMUの排他ロック)が実測では常に保持されて
+    いたが、これはソースコード中の「Called outside BQL」というコメント
+    と食い違っており、正確な理由は特定しきれていない(実装自体はどちら
+    のケースでも安全に動くよう防御的に書いてあるため、動作の正しさには
+    影響しない)
+  - `hw/nvram/fw_cfg.c`はマルチアーキテクチャ共通のQEMUファイルだが、
+    今回のextern宣言方式は「x86_64-softmmu単体ビルド」を前提にしている
+    (他アーキテクチャを同時ビルドする場合はリンクエラーになるが、この
+    プロジェクトでは該当しない)
+  - syscall番号273(set_robust_list)・334(rseq)・206(io_setup)が
+    既存の`syscall_table.py`の名前テーブルに無く、ログ上は`syscall_N`
+    と表示される(番号自体は正しく記録されている。Phase 7とは無関係の
+    軽微な既存の抜け漏れ)
+  - VM-Exit自体のコスト(ソフトウェアブレークポイント方式の本質的な
+    オーバーヘッド)は、gdbを排除しても消えない。1ヒットにつき最低
+    2回のVM-Exitが必要という制約は残っている
+
+
+7. 関連ドキュメント
+======================
+
+  - README.md                              : Phase 1〜7の結果サマリ全体
+  - docs/phase6_inline_qemu_design.md       : Phase 6の設計調査(kvm_handle_debug等)
+  - docs/phase6_beginner_explanation.txt    : Phase 6の初心者向け詳細解説
+  - docs/phase7_boot_sync_investigation.md  : Phase 7の調査・実装・検証の全記録
+  - qemu_patch/README.md                    : パッチ適用・ビルド・実行手順

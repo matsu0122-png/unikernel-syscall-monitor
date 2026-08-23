@@ -14,6 +14,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 4 (ground-truth cross-check vs in-guest strace): done.** See below.
 - **Phase 5 (capture from boot, not just after-the-fact attach): investigated, blocked.** See below. `run_capture.py` still only captures from whenever it attaches (a few seconds into an already-running guest); `run_capture_from_boot.py` documents why racing kraftkit's own boot sequence doesn't currently work.
 - **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
+- **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
 
 ## Phase 1 result
 
@@ -347,6 +348,95 @@ instructions):
 - `kraft run --qemu <path>` / `KRAFTKIT_QEMU` env var / `qemu:` in
   `~/.config/kraftkit/config.yaml` all point kraftkit at a custom-built
   QEMU binary -- no kraftkit source changes needed.
+
+**Live terminal view (added after the initial Phase 6 implementation)**:
+`run_capture_inline.py` now tails its own JSONL output file (a plain
+Python re-implementation of `tail -f`, polling every 50ms) and prints
+each event to the terminal as `[HH:MM:SS.mmm] name(args...)`, in
+addition to writing the JSONL as before -- the two are not exclusive.
+No change to the QEMU-side hot path (`vmi_monitor_breakpoint_hit()` in
+`qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`) was needed or made;
+QEMU has no idea whether anything is reading the file it appends to.
+Running with no `--duration` now waits for Ctrl-C instead of exiting
+after a fixed time (`--duration N` still works exactly as before);
+`--quiet` disables the terminal view (JSONL still written) for scripting
+or for an apples-to-apples A/B against the live view; `--show-after-ready`
+suppresses terminal output (not JSONL) until the first `accept4`, to
+skip past a noisy boot without losing the boot-time events from the
+file. A quick A/B (`ab -n 300 -c 5`, 2-3 reps each, same custom QEMU +
+active monitor both times): quiet ~1417-1685 req/s vs. live-view
+~1423-1527 req/s -- the two ranges overlap; any live-view overhead is
+within this machine's run-to-run noise, not a clear, separate cost.
+
+## Phase 7 result
+
+Investigation: `docs/phase7_boot_sync_investigation.md`. Implementation
+and verification: same doc's §13, plus `qemu_patch/` (`0003-fw_cfg.c.diff`,
+updated `vmi-syscall-monitor.{c,h}`).
+
+**Problem**: Phase 6's boot-time capture depended on winning a
+200ms-interval polling race against boot -- it worked *sometimes*
+(observed 0 to 289+ boot-time events, run to run) but never
+guaranteed capturing the guest's actual first syscall.
+
+**Root cause, found by reading the actual QEMU source this project
+builds (not assumed)**: Unikraft's kernel image carries a multiboot
+header (confirmed: magic `0x1BADB002` at file offset 52) with
+`MULTIBOOT_HEADER_HAS_ADDR` set, so QEMU's `load_multiboot()`
+(`hw/i386/multiboot.c`) stages the kernel bytes into the `fw_cfg` device
+(selector `FW_CFG_KERNEL_DATA`) rather than writing them into guest RAM
+itself. A tiny, `bootindex=0` option ROM (`multiboot_dma.bin` -- this
+machine type has fw_cfg DMA enabled by default, confirmed against the
+actual class defaults) issues one DMA request during SeaBIOS's
+boot-order processing; QEMU's own `fw_cfg_dma_transfer()`
+(`hw/nvram/fw_cfg.c`) is what actually performs the guest-RAM write, in
+one synchronous, host-side C function call. A 0xcc planted before this
+one-shot event is silently overwritten by it; one planted after never
+is again.
+
+**Fix**: hook that exact function. Right after
+`fw_cfg_dma_transfer()`'s existing copy loop, if the just-completed
+transfer was `FW_CFG_KERNEL_DATA` (and only that selector), call a new
+`vmi_monitor_kernel_loaded()` (`target/i386/kvm/vmi-syscall-monitor.c`)
+which arms and verifies the breakpoint right there -- reusing the same
+remove/insert/readback logic Phase 6 already had (factored out into a
+shared `vmi_arm_once()` helper, not duplicated). No vCPU pause/resume
+dance is needed: this hook already runs synchronously on the vCPU's own
+thread, inside the guest's own triggering MMIO/PIO exit, so there is no
+window for the guest to run another instruction between "kernel bytes
+just landed" and "0xcc is in place". The old 200ms polling loop is kept,
+unmodified in behavior, as an automatic fallback -- it stands itself
+down the moment boot-sync succeeds (in every observed run, within 3
+polling attempts, ~600ms, before it could have mattered).
+
+**Verified, not just implemented**:
+- **10/10 fresh boots** armed via the deterministic path and captured an
+  **identical** 289-event sequence starting with `brk` -- not just
+  "usually", every single time in this environment.
+- **Offset-0 ground-truth match**: compared against the existing Phase 4
+  in-guest strace log (`CONFIG_LIBSYSCALL_SHIM_STRACE`) with a stricter
+  bar than Phase 4 used -- element-by-element from index 0, not "longest
+  match anywhere". **134/134 comparable events matched exactly, in
+  order, from the very first syscall.** (The sequence "diverges" after
+  that only because 3 syscall numbers aren't in this project's
+  pre-existing name table and log as `syscall_N` instead of by name --
+  the raw numbers still match; a small orthogonal gap, not a capture
+  problem.)
+- HTTP-request capture (the Phase 6 steady-state path, untouched by this
+  change) still produces the exact same known-good per-request syscall
+  pattern.
+- Benchmark (`ab -n 300 -c 5`, 3 reps): 1407-1683 req/s, indistinguishable
+  from Phase 6 alone (~1416-1685 req/s in earlier sessions) -- expected,
+  since this only changes a few hundred milliseconds of one-time boot
+  behavior, not the steady-state hot path.
+- One genuinely unresolved detail, reported rather than hidden: the BQL
+  (QEMU's global lock) was empirically found to be held at this hook's
+  call site in every run, which doesn't match a literal reading of
+  `kvm-all.c`'s "Called outside BQL" comments for this exit path; the
+  code handles both cases correctly regardless (checks
+  `qemu_mutex_iothread_locked()` and only locks if needed), so this
+  doesn't affect correctness, but the precise reason for the discrepancy
+  wasn't fully chased down.
 
 ## Notes for later phases
 

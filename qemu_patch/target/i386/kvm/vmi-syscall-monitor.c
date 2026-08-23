@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
+#include "qemu/main-loop.h"
 #include "sysemu/runstate.h"
 #include "sysemu/hw_accel.h"
 #include "sysemu/kvm.h"
@@ -23,6 +24,7 @@ static GHashTable *vmi_state_table; /* CPUState* -> VmiState (direct value) */
 static QEMUTimer *vmi_arm_timer;
 static int vmi_arm_attempts;
 static bool vmi_first_hit_seen;
+static bool vmi_boot_sync_ok; /* Phase 7: true once vmi_monitor_kernel_loaded() armed successfully */
 
 #define VMI_ARM_RETRY_MS      200
 #define VMI_ARM_MAX_ATTEMPTS  100 /* ~20s total before giving up */
@@ -75,40 +77,84 @@ void vmi_monitor_set_state(CPUState *cs, VmiState state)
 }
 
 /*
- * Attempt (or retry) arming the breakpoint, with mandatory readback
- * verification. This is the direct fix for the Phase 5 failure mode:
+ * Core, single-attempt arm-and-verify: remove any stale registration,
+ * insert fresh, read the byte back and require exactly 0xcc. Shared by
+ * both the Phase 6 timer-retry path (vmi_try_arm(), below) and the
+ * Phase 7 boot-sync path (vmi_monitor_kernel_loaded()) -- the readback
+ * requirement is the direct fix for the Phase 5 failure mode:
  * kvm_insert_breakpoint() reporting success is NOT sufficient evidence
- * that 0xcc actually landed in guest memory (e.g. address translation
- * not yet established at the moment of the call). Only a post-write
- * memory read confirms it.
+ * that 0xcc actually landed in guest memory. `log_tag` is just the
+ * bracketed prefix used in vmi_debug() lines (e.g. "arm" or
+ * "boot-sync") so the two callers' attempts stay distinguishable in
+ * <log>.debug.log.
  *
- * Empirically (this project's boot path: QEMU pre-stages the kernel
- * image via -kernel/-initrd, but the guest actually boots through
- * SeaBIOS -> iPXE -> chainload, not a direct jump to the kernel entry
- * point) a breakpoint armed at the very first RUN_STATE_RUNNING
- * transition can read back as genuinely 0xcc at that instant and then
- * be silently overwritten later in the same boot sequence (observed
- * directly: readback was 0xcc right after arming, but 0xfa -- the
- * original byte -- a few seconds later once boot had progressed,
- * confirmed via a plain HMP `xp` read with no monitor code involved).
- * So a single successful readback is necessary but NOT sufficient
- * evidence the breakpoint is actually live for the guest's real
- * execution. This function is therefore called repeatedly -- even
- * after a successful verification -- until a real int3 hit is
- * observed (vmi_first_hit_seen, set from vmi_monitor_breakpoint_hit()),
- * re-arming from scratch (remove then insert, not insert alone -- see
- * the note below) each time it finds the byte has reverted.
+ * Always removes before inserting, even on the very first attempt
+ * (where this is a harmless -ENOENT no-op): kvm_insert_breakpoint() on
+ * an address it already believes is registered just increments a
+ * refcount and returns 0 WITHOUT touching guest memory -- so calling it
+ * again after an external revert would silently do nothing. This
+ * remove+insert pair is what actually forces a fresh memory patch.
+ */
+static bool vmi_arm_once(CPUState *cs, const char *log_tag)
+{
+    uint8_t readback;
+    int err;
+
+    kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+
+    err = kvm_insert_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+    if (err) {
+        vmi_debug("[%s] kvm_insert_breakpoint(0x%" PRIx64 ") failed: %d",
+                  log_tag, (uint64_t)vmi_addr, err);
+        return false;
+    }
+
+    if (cpu_memory_rw_debug(cs, vmi_addr, &readback, 1, 0) != 0) {
+        vmi_debug("[%s] verification read itself failed -- address "
+                  "translation likely not established yet", log_tag);
+        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+        return false;
+    }
+
+    if (readback != 0xcc) {
+        vmi_debug("[%s] readback=0x%02x, NOT 0xcc (Phase 5-style silent "
+                  "failure)", log_tag, readback);
+        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+        return false;
+    }
+
+    vmi_debug("[%s] readback=0xcc confirmed", log_tag);
+    return true;
+}
+
+/*
+ * Phase 6 fallback path: poll every 200ms. Empirically (this project's
+ * boot path: QEMU pre-stages the kernel image via -kernel/-initrd, but
+ * the guest actually boots through SeaBIOS -> iPXE -> chainload, not a
+ * direct jump to the kernel entry point) a breakpoint armed at the very
+ * first RUN_STATE_RUNNING transition can read back as genuinely 0xcc at
+ * that instant and then be silently overwritten later in the same boot
+ * sequence (observed directly: readback was 0xcc right after arming,
+ * but 0xfa -- the original byte -- a few seconds later once boot had
+ * progressed, confirmed via a plain HMP `xp` read with no monitor code
+ * involved). Root-caused in Phase 7
+ * (docs/phase7_boot_sync_investigation.md): a single one-shot
+ * fw_cfg_dma_transfer() call overwrites this region once, at an
+ * unpredictable point in boot. vmi_monitor_kernel_loaded() (below) now
+ * hooks that exact event instead of guessing -- this polling loop stays
+ * only as a fallback for whenever that hook doesn't end up firing (or
+ * this build's boot path changes), and immediately stands down
+ * (vmi_boot_sync_ok) the moment the hook succeeds.
  */
 static void vmi_try_arm(void *opaque)
 {
     CPUState *cs = first_cpu;
-    uint8_t readback;
-    int err;
 
-    if (vmi_first_hit_seen) {
-        /* A real hit already proved the breakpoint is live; nothing
-         * left to do (this can still be invoked once more if a retry
-         * was already in flight when the first hit landed). */
+    if (vmi_first_hit_seen || vmi_boot_sync_ok) {
+        /* Either a real hit, or the Phase 7 boot-sync hook, already
+         * proved the breakpoint is live; nothing left to do (this can
+         * still be invoked once more if a retry was already in flight
+         * when that happened). */
         if (vmi_arm_timer) {
             timer_free(vmi_arm_timer);
             vmi_arm_timer = NULL;
@@ -121,63 +167,23 @@ static void vmi_try_arm(void *opaque)
               PRIx64, vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS,
               (uint64_t)vmi_addr);
 
-    /*
-     * Always remove before inserting, even on the very first attempt
-     * (where this is a harmless -ENOENT no-op). kvm_insert_breakpoint()
-     * on an address it already believes is registered just increments a
-     * refcount and returns 0 WITHOUT touching guest memory -- so calling
-     * it again after an external revert would silently do nothing. This
-     * remove+insert pair is what actually forces a fresh memory patch.
-     */
-    kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
-
-    err = kvm_insert_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
-    if (err) {
-        vmi_debug("[arm] attempt %d/%d: kvm_insert_breakpoint failed: %d",
-                  vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS, err);
-        warn_report("vmi-monitor: arm attempt %d/%d: kvm_insert_breakpoint(0x%"
-                     PRIx64 ") failed: %d -- retrying in %d ms",
-                     vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS,
-                     (uint64_t)vmi_addr, err, VMI_ARM_RETRY_MS);
-        goto retry_or_fail;
-    }
-
-    if (cpu_memory_rw_debug(cs, vmi_addr, &readback, 1, 0) != 0) {
-        vmi_debug("[arm] attempt %d/%d: verification read itself failed",
-                  vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS);
-        warn_report("vmi-monitor: arm attempt %d/%d: kvm_insert_breakpoint(0x%"
-                     PRIx64 ") returned success but the verification read "
-                     "itself failed -- address translation likely not "
-                     "established yet; retrying in %d ms",
+    if (!vmi_arm_once(cs, "arm")) {
+        warn_report("vmi-monitor: arm attempt %d/%d at 0x%" PRIx64
+                     " did not stick -- retrying in %d ms",
                      vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS,
                      (uint64_t)vmi_addr, VMI_ARM_RETRY_MS);
-        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
         goto retry_or_fail;
     }
 
-    if (readback != 0xcc) {
-        vmi_debug("[arm] attempt %d/%d: readback=0x%02x, NOT 0xcc",
-                  vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS, readback);
-        warn_report("vmi-monitor: arm attempt %d/%d: kvm_insert_breakpoint(0x%"
-                     PRIx64 ") reported success but memory readback shows "
-                     "0x%02x, not 0xcc (Phase 5-style silent failure) -- "
-                     "retrying in %d ms",
-                     vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS,
-                     (uint64_t)vmi_addr, readback, VMI_ARM_RETRY_MS);
-        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
-        goto retry_or_fail;
-    }
-
-    vmi_debug("[arm] attempt %d/%d: readback=0xcc confirmed -- still "
-              "re-verifying until a real hit lands", vmi_arm_attempts,
-              VMI_ARM_MAX_ATTEMPTS);
     info_report("vmi-monitor: breakpoint armed and VERIFIED at 0x%" PRIx64
                 " (0xcc confirmed via memory readback; attempt %d/%d; "
                 "still monitoring for revert until first real hit)",
                 (uint64_t)vmi_addr, vmi_arm_attempts, VMI_ARM_MAX_ATTEMPTS);
-    /* Do NOT stop here -- see function comment: a successful readback is
-     * not proof the breakpoint survives the rest of boot. Keep the timer
-     * running; it self-cancels once vmi_first_hit_seen is set. */
+    /* Do NOT stop here: a successful readback is not proof the
+     * breakpoint survives the rest of boot on this fallback path (that
+     * guarantee only holds for the boot-sync path). Keep the timer
+     * running; it self-cancels once vmi_first_hit_seen or
+     * vmi_boot_sync_ok is set. */
     if (vmi_arm_attempts >= VMI_ARM_MAX_ATTEMPTS) {
         vmi_debug("[arm] reached max attempts while still re-verifying; "
                   "leaving last-known-good state and giving up on further "
@@ -212,6 +218,72 @@ retry_or_fail:
     }
     timer_mod(vmi_arm_timer,
               qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + VMI_ARM_RETRY_MS);
+}
+
+/*
+ * Phase 7: called from fw_cfg_dma_transfer() (hw/nvram/fw_cfg.c) the
+ * instant the FW_CFG_KERNEL_DATA transfer -- the one event that writes
+ * Unikraft's kernel image into guest RAM -- has finished, and before
+ * that function returns control to the guest. See
+ * docs/phase7_boot_sync_investigation.md for the full derivation of why
+ * this specific point is safe and no explicit vCPU pause is needed: we
+ * are already executing synchronously on the same call stack as the
+ * guest's own triggering MMIO write, so there is no window for another
+ * guest instruction to run between "kernel bytes just landed" and "our
+ * 0xcc is in place".
+ *
+ * BQL note (checked empirically, not assumed -- see
+ * qemu_mutex_iothread_locked() call below and its corresponding
+ * [boot-sync] debug line): kvm_cpu_exec()'s KVM_EXIT_MMIO case is
+ * explicitly commented "Called outside BQL", and
+ * memory_region_dispatch_write() (softmmu/memory.c) does not acquire it
+ * either -- so unlike vmi_try_arm() (always called from a timer
+ * callback or a vm-state-change notifier, both BQL-guaranteed by QEMU
+ * itself), this function cannot assume the BQL is already held. It is
+ * taken explicitly here if not already held, mirroring the same
+ * pattern kvm_arch_handle_exit()'s KVM_EXIT_DEBUG case already uses
+ * around kvm_handle_debug(). This also matters for correctness beyond
+ * just this call: it serializes this function against vmi_try_arm()
+ * (which runs on a *different* OS thread -- the main/iothread -- while
+ * this runs on the vCPU's own thread), so the two can never race each
+ * other's kvm_insert_breakpoint()/kvm_remove_breakpoint() calls.
+ */
+void vmi_monitor_kernel_loaded(CPUState *cs)
+{
+    bool was_locked;
+
+    if (!vmi_enabled || vmi_boot_sync_ok || vmi_first_hit_seen) {
+        return;
+    }
+
+    vmi_debug("[boot-sync] FW_CFG_KERNEL_DATA transfer completed");
+
+    was_locked = qemu_mutex_iothread_locked();
+    vmi_debug("[boot-sync] BQL held on entry: %s", was_locked ? "yes" : "no");
+    if (!was_locked) {
+        qemu_mutex_lock_iothread();
+    }
+
+    vmi_debug("[boot-sync] arming breakpoint at 0x%" PRIx64, (uint64_t)vmi_addr);
+    if (vmi_arm_once(cs, "boot-sync")) {
+        vmi_boot_sync_ok = true;
+        vmi_debug("[boot-sync] guest may resume");
+        info_report("vmi-monitor: boot-sync armed breakpoint at 0x%" PRIx64
+                    " immediately after the fw_cfg kernel-data transfer "
+                    "(no polling needed)", (uint64_t)vmi_addr);
+        if (vmi_arm_timer) {
+            timer_free(vmi_arm_timer);
+            vmi_arm_timer = NULL;
+        }
+    } else {
+        vmi_debug("[boot-sync] arm FAILED -- falling back to periodic retry");
+        warn_report("vmi-monitor: boot-sync arm failed at the fw_cfg hook "
+                     "-- falling back to the periodic retry path");
+    }
+
+    if (!was_locked) {
+        qemu_mutex_unlock_iothread();
+    }
 }
 
 static void vmi_vm_state_change(void *opaque, bool running, RunState state)

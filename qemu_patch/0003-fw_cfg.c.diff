@@ -1,0 +1,54 @@
+--- pristine/hw/nvram/fw_cfg.c	2026-08-23 13:55:08.000000000 +0900
++++ patched/hw/nvram/fw_cfg.c	2026-08-23 16:36:27.920568617 +0900
+@@ -42,6 +42,28 @@
+ #include "qapi/error.h"
+ #include "hw/acpi/aml-build.h"
+ #include "hw/pci/pci_bus.h"
++#include "qemu/main-loop.h"
++#include "hw/core/cpu.h"
++
++/*
++ * Phase 7 VMI syscall monitor hook (catalog/library/nginx
++ * vmi_syscall_monitor project; see
++ * target/i386/kvm/vmi-syscall-monitor.c and
++ * docs/phase7_boot_sync_investigation.md). Forward-declared here rather
++ * than including the x86/kvm-specific vmi-syscall-monitor.h, which pulls
++ * in X86CPU/CPUX86State -- this file is generic/cross-architecture and
++ * should stay that way. No-op unless VMI_MONITOR_ADDR is set (checked
++ * inside the function itself).
++ *
++ * KNOWN LIMITATION: this forward declaration assumes the definition in
++ * target/i386/kvm/vmi-syscall-monitor.c is always linked in, true for
++ * this project's own build (--target-list=x86_64-softmmu only). It
++ * would NOT link for a multi-architecture QEMU build that includes a
++ * non-x86_64 target sharing this file without also building
++ * x86_64-softmmu -- not a concern for this project's own use, but worth
++ * calling out rather than silently assuming it away.
++ */
++void vmi_monitor_kernel_loaded(CPUState *cs);
+ 
+ #define FW_CFG_FILE_SLOTS_DFLT 0x20
+ 
+@@ -445,6 +467,22 @@
+ 
+     }
+ 
++    /*
++     * Phase 7 VMI hook: FW_CFG_KERNEL_DATA is the one-shot transfer that
++     * writes Unikraft's kernel image (including _ukplat_syscall) into
++     * guest RAM -- see docs/phase7_boot_sync_investigation.md. Fire the
++     * moment this specific entry's read has fully completed (all of
++     * e->len consumed, no DMA error), still before returning control to
++     * the guest. Deliberately checked by selector, not just "some read
++     * finished", so other fw_cfg DMA traffic (cmdline, initrd/mbi data,
++     * etc.) never triggers this.
++     */
++    if (read && !(dma.control & FW_CFG_DMA_CTL_ERROR) &&
++        s->cur_entry == FW_CFG_KERNEL_DATA &&
++        e != NULL && s->cur_offset >= e->len) {
++        vmi_monitor_kernel_loaded(current_cpu);
++    }
++
+     stl_be_dma(s->dma_as, dma_addr + offsetof(FWCfgDmaAccess, control),
+                 dma.control, MEMTXATTRS_UNSPECIFIED);
+ 

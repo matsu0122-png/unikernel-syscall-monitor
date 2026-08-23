@@ -1,5 +1,5 @@
---- /tmp/claude-1013/-home-matsu-catalog-library-nginx-1-25-vmi-syscall-monitor/e1e81c98-752d-4594-861d-a4604d999feb/scratchpad/qemu-src/qemu-6.2+dfsg/target/i386/kvm/kvm.c	2021-12-15 05:42:02.000000000 +0900
-+++ /home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/target/i386/kvm/kvm.c	2026-08-23 14:29:02.769571965 +0900
+--- pristine/target/i386/kvm/kvm.c	2021-12-15 05:42:02.000000000 +0900
++++ patched/target/i386/kvm/kvm.c	2026-08-23 14:29:02.769571965 +0900
 @@ -52,6 +52,8 @@
  #include "exec/memattrs.h"
  #include "trace.h"
