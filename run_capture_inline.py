@@ -46,6 +46,7 @@ logs/whatever.jsonl` would be.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import subprocess
@@ -79,14 +80,36 @@ def resolve_syscall_addr() -> int:
     raise RuntimeError(f"_ukplat_syscall not found in {dbg}")
 
 
-def start_instance(name: str, qemu_path: str, addr: int, log_path: str) -> None:
+def resolve_syscall_ret_addr(entry_addr: int) -> int:
+    """Phase 8: the return hook is the `jmp *%rcx` that ends
+    _ukplat_syscall (plat/common/x86/syscall.S) -- the one instruction
+    where every register is restored and %rax holds the return value.
+    It's an assembly-only routine, so find it by disassembling from the
+    entry rather than by symbol."""
+    dbg = PROJECT_DIR / ".unikraft" / "build" / "nginx_qemu-x86_64.dbg"
+    out = subprocess.run(
+        ["objdump", "-d", f"--start-address={hex(entry_addr)}",
+         f"--stop-address={hex(entry_addr + 0x400)}", str(dbg)],
+        capture_output=True, text=True, check=True)
+    for line in out.stdout.splitlines():
+        if "jmp" in line and "*%rcx" in line:
+            return int(line.split(":")[0].strip(), 16)
+    raise RuntimeError(f"`jmp *%rcx` not found after _ukplat_syscall in {dbg}")
+
+
+def start_instance(name: str, qemu_path: str, addr: int, ret_addr: int | None,
+                   log_path: str, port: int) -> None:
     env = dict(os.environ)
     env["VMI_MONITOR_ADDR"] = hex(addr)
     env["VMI_MONITOR_LOG"] = str(Path(log_path).resolve())
+    env.pop("VMI_MONITOR_RET_ADDR", None)
+    if ret_addr is not None:
+        env["VMI_MONITOR_RET_ADDR"] = hex(ret_addr)
 
-    cmd = ["kraft", "run", "-d", "-p", "8080:80", "--name", name, "--qemu", qemu_path, "."]
+    cmd = ["kraft", "run", "-d", "-p", f"{port}:80", "--name", name, "--qemu", qemu_path, "."]
     print(f"[run_capture_inline] {' '.join(cmd)}")
     print(f"[run_capture_inline] env VMI_MONITOR_ADDR={env['VMI_MONITOR_ADDR']} "
+          f"VMI_MONITOR_RET_ADDR={env.get('VMI_MONITOR_RET_ADDR', '(unset)')} "
           f"VMI_MONITOR_LOG={env['VMI_MONITOR_LOG']}")
     subprocess.run(cmd, cwd=str(PROJECT_DIR), env=env, check=True)
     time.sleep(1.5)
@@ -115,12 +138,29 @@ def wait_for_armed_message(debug_log_path: Path, timeout_s: float) -> bool:
     return False
 
 
+def format_ret(evt: dict) -> str:
+    """strace-style `= <result>` suffix; empty for entry-only (--no-ret) logs."""
+    if "unfinished" in evt:
+        return f" = ? <unfinished: {evt['unfinished']}>"
+    if "ret" not in evt:
+        return ""
+    ret = evt["ret"]
+    if "err" in evt:
+        msg = os.strerror(-ret) if -ret in errno.errorcode else "unknown error"
+        res = f"{ret} {evt['err']} ({msg})"
+    elif ret >= 0x10000:
+        res = hex(ret)  # pointer-like (mmap/brk addresses)
+    else:
+        res = str(ret)
+    return f" = {res}  <{evt['dur_us']}us>"
+
+
 def format_event(evt: dict) -> str:
     ts = evt.get("ts", 0.0)
     t = datetime.fromtimestamp(ts).strftime("%H:%M:%S") + f".{int((ts % 1) * 1000):03d}"
     name = evt.get("syscall", f"syscall_{evt.get('num')}")
     args = ", ".join(evt.get("args", []))
-    return f"[{t}] {name}({args})"
+    return f"[{t}] {name}({args}){format_ret(evt)}"
 
 
 def tail_lines(path: Path, deadline: float | None):
@@ -190,6 +230,14 @@ def main() -> int:
     parser.add_argument("--log", default=str(HERE / "logs" / "capture_inline.jsonl"))
     parser.add_argument("--qemu", default=DEFAULT_QEMU)
     parser.add_argument("--addr", default=None, help="hex address, e.g. 0x101000 (default: resolved via nm)")
+    parser.add_argument("--ret-addr", default=None,
+                         help="hex address of the syscall return hook (`jmp *%%rcx` at the end of "
+                              "_ukplat_syscall; default: resolved via objdump)")
+    parser.add_argument("--no-ret", action="store_true",
+                         help="don't capture return values (entry-only logging, Phase 6/7 "
+                              "behavior; half the VM exits per syscall)")
+    parser.add_argument("--port", type=int, default=8080,
+                         help="host port forwarded to the guest's port 80 (default: 8080)")
     parser.add_argument("--quiet", action="store_true",
                          help="don't print syscalls to the terminal (JSONL is still written); "
                               "for scripting, or for an apples-to-apples overhead comparison "
@@ -206,6 +254,12 @@ def main() -> int:
 
     addr = int(args.addr, 0) if args.addr else resolve_syscall_addr()
     print(f"[run_capture_inline] _ukplat_syscall = {hex(addr)}")
+    if args.no_ret:
+        ret_addr = None
+        print("[run_capture_inline] --no-ret: return values not captured")
+    else:
+        ret_addr = int(args.ret_addr, 0) if args.ret_addr else resolve_syscall_ret_addr(addr)
+        print(f"[run_capture_inline] syscall return hook = {hex(ret_addr)}")
 
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,7 +275,7 @@ def main() -> int:
         return 1
 
     print("[VMI] starting Unikraft VM...")
-    start_instance(args.name, args.qemu, addr, str(log_path))
+    start_instance(args.name, args.qemu, addr, ret_addr, str(log_path), args.port)
 
     if wait_for_armed_message(debug_log_path, ARM_CHECK_TIMEOUT_S):
         print(f"[VMI] breakpoint armed at _ukplat_syscall ({hex(addr)})")

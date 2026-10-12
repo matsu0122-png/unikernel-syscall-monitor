@@ -15,6 +15,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 5 (capture from boot, not just after-the-fact attach): investigated, blocked.** See below. `run_capture.py` still only captures from whenever it attaches (a few seconds into an already-running guest); `run_capture_from_boot.py` documents why racing kraftkit's own boot sequence doesn't currently work.
 - **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
+- **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Costs a further ~40% throughput (~840-940 vs ~1360-1630 req/s); `--no-ret` restores Phase 6/7 entry-only behavior.
 
 ## Phase 1 result
 
@@ -437,6 +438,78 @@ polling attempts, ~600ms, before it could have mattered).
   `qemu_mutex_iothread_locked()` and only locks if needed), so this
   doesn't affect correctness, but the precise reason for the discrepancy
   wasn't fully chased down.
+
+## Phase 8 result
+
+Goal: show whether each syscall actually succeeded, like Unikraft's
+`CONFIG_LIBSYSCALL_SHIM_STRACE` output (`openat(...) = No such file or
+directory (-2)`), not just that it was issued.
+
+**Return hook**: `_ukplat_syscall` (`plat/common/x86/syscall.S`) ends in
+`jmp *%rcx` (`0x1010da` in this build). At that instruction every
+register has been popped back from the saved `struct __regs` and `%rax`
+holds the return value. A second breakpoint there goes through exactly the
+same in-QEMU int3 -> step-over -> reinsert path as the entry hook
+(`vmi_monitor_is_hook_addr()`, with a per-vCPU record of which address is
+being stepped over), and is armed and read back together with the entry
+breakpoint by both the Phase 7 boot-sync path and the polling fallback.
+`run_capture_inline.py` finds the address by disassembling from
+`_ukplat_syscall` (`objdump`, first `jmp *%rcx`) and passes it as
+`VMI_MONITOR_RET_ADDR`. If that variable is unset, QEMU behaves exactly
+as in Phase 7.
+
+**Entry/return pairing**: the entry is held (arguments + entry time) until
+its return, matched on the application's `%rsp` and `%rcx`. Both are
+identical at the two hooks: at entry they are the caller's stack and the
+`syscall` return rip, and at exit syscall.S has restored exactly those.
+Because of this, a blocking syscall stays correctly paired even if the
+guest switches threads meanwhile, without assuming per-vCPU LIFO order.
+Entries that never return (`exit_group`, or the `epoll_wait` blocked at VM
+shutdown) are flushed on `RUN_STATE_SHUTDOWN` as `"ret": null,
+"unfinished": "shutdown"`. The pending table holds 64 entries; if it ever
+fills, the oldest is evicted and logged as unfinished.
+
+**Log format** (one line per syscall, written when it *returns*, which is
+the same ordering as Unikraft's own strace):
+
+```json
+{"ts": 1791770511.40, "cpu": 0, "rip": "0x101000", "num": 257, "syscall": "openat",
+ "args": ["0xffffff9c", "0x1000181de0", "0x80000", "0x0"], "ret": -2, "err": "ENOENT", "dur_us": 58}
+```
+
+`ts` is still the entry time. `ret` is the signed 64-bit `rax`. `err` is
+present only for -4095..-1 (the -errno range; names come from the host's
+glibc, which is valid because the guest uses the Linux x86_64 errno ABI).
+`dur_us` is entry-to-return wall time *including* monitoring overhead
+(each hook costs ~50us here), so it is meaningful for long blocking calls
+(`epoll_wait` showed 1.6s / 3.8s idle waits between curls) but not as a
+precise per-syscall cost. Live view: `name(args) = -2 ENOENT (No such
+file or directory)  <58us>`.
+
+**Verified** (`--port 8081`, 3 curls): 339 events, 338 with a return
+value plus 1 unfinished (the final blocked `epoll_wait`), and 0
+unmatched returns in the debug log. Values agree with an in-guest strace
+run of the same workload: the libcrypt search path is all `ENOENT` until
+`newfstatat("/usr/lib") = 0`, `openat("/etc/ld.so.cache") = fd`,
+`read(...) = 832` per ELF header, `connect(AF_UNIX) = ENOENT`,
+`pread64 = 612`, `writev = 850` (0x352), and `recvfrom = 78`. The last one
+is 77 in the strace run only because `localhost:8080` is one character
+shorter than `localhost:8081` in the Host header. One expected difference:
+`brk` returns real addresses here (`brk(0x402421000) = 0x402421000`)
+whereas an older strace-enabled build showed `ENOSYS`; that build printed
+brk in the generic, non-`HAVE_uk_syscall_brk` form, i.e. it did not provide
+brk, while the current binary does (`brk-1` in `provided_syscalls.in`).
+
+**Overhead** (`ab -n 300 -c 5`, 3 reps each, same patched binary): with
+return capture ~844-942 req/s, `--no-ret` ~1358-1632 req/s (unchanged from
+Phase 6/7). This is expected: 4 VM exits per syscall instead of 2.
+
+**Compatibility**: with return capture on, lines are in *completion*
+order rather than entry order (identical for this single-threaded
+workload), and an unfinished line may appear at the end. `validate_strace.py`
+only reads `syscall` and is unaffected. `bench_overhead_inline.py`
+doesn't set `VMI_MONITOR_RET_ADDR`, so it still measures the entry-only
+mechanism.
 
 ## Notes for later phases
 

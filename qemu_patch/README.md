@@ -82,6 +82,8 @@ Opt-in via two environment variables read once at QEMU startup
 
 ```
 export VMI_MONITOR_ADDR=0x101000     # _ukplat_syscall, resolve via `nm` -- don't hardcode across builds
+export VMI_MONITOR_RET_ADDR=0x1010da # Phase 8, optional: the `jmp *%rcx` ending _ukplat_syscall
+                                     # (objdump); enables "ret"/"err"/"dur_us" per syscall
 export VMI_MONITOR_LOG=/path/to/capture.jsonl
 kraft run -d -p 8080:80 --name vmiinline --qemu /path/to/build/qemu-system-x86_64 .
 ```

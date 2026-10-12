@@ -1,6 +1,6 @@
 /*
- * Phase 6 inline syscall monitor. See vmi-syscall-monitor.h for the
- * opt-in contract. Design background:
+ * Phase 6 inline syscall monitor (Phase 8: + return values). See
+ * vmi-syscall-monitor.h for the opt-in contract. Design background:
  * catalog/library/nginx/1.25/vmi_syscall_monitor/docs/phase6_inline_qemu_design.md
  */
 #include "qemu/osdep.h"
@@ -25,6 +25,39 @@ static QEMUTimer *vmi_arm_timer;
 static int vmi_arm_attempts;
 static bool vmi_first_hit_seen;
 static bool vmi_boot_sync_ok; /* Phase 7: true once vmi_monitor_kernel_loaded() armed successfully */
+static GHashTable *vmi_step_addr_table; /* CPUState* -> hook address being stepped over */
+
+/*
+ * Phase 8: return-value capture. vmi_ret_addr is the `jmp *%rcx` at the
+ * very end of _ukplat_syscall (plat/common/x86/syscall.S) -- the last
+ * instruction before control returns to the application. At that point
+ * every register has been restored from the saved `struct __regs`, and
+ * %rax holds the syscall's return value. 0 = return capture disabled
+ * (log at entry only, Phase 6/7 behavior).
+ *
+ * An entry is held in vmi_pending[] until its matching return. Pairing
+ * key: the application's %rsp and %rcx. At entry %rsp is still the
+ * caller's stack and %rcx is the return rip (set by the `syscall`
+ * instruction); at the return hook syscall.S has reloaded exactly those
+ * two values (`movq 32(%rsp), %rsp`; %rcx popped from __regs). This
+ * keeps pairs correct even if the guest switches threads while a
+ * syscall blocks, rather than assuming strict per-vCPU LIFO order.
+ */
+static target_ulong vmi_ret_addr;
+
+typedef struct VmiPending {
+    bool used;
+    uint64_t seq;       /* insertion order, for evicting the oldest */
+    uint64_t rsp, rcx;  /* pairing key */
+    int cpu_index;
+    uint64_t num;
+    uint64_t argv[6];
+    struct timeval tv;  /* entry time */
+} VmiPending;
+
+#define VMI_PENDING_MAX 64
+static VmiPending vmi_pending[VMI_PENDING_MAX];
+static uint64_t vmi_pending_seq;
 
 #define VMI_ARM_RETRY_MS      200
 #define VMI_ARM_MAX_ATTEMPTS  100 /* ~20s total before giving up */
@@ -63,6 +96,11 @@ target_ulong vmi_monitor_addr(void)
     return vmi_addr;
 }
 
+bool vmi_monitor_is_hook_addr(target_ulong pc)
+{
+    return vmi_enabled && (pc == vmi_addr || (vmi_ret_addr && pc == vmi_ret_addr));
+}
+
 VmiState vmi_monitor_get_state(CPUState *cs)
 {
     if (!vmi_state_table) {
@@ -95,35 +133,55 @@ void vmi_monitor_set_state(CPUState *cs, VmiState state)
  * again after an external revert would silently do nothing. This
  * remove+insert pair is what actually forces a fresh memory patch.
  */
-static bool vmi_arm_once(CPUState *cs, const char *log_tag)
+static bool vmi_arm_addr(CPUState *cs, target_ulong addr, const char *log_tag)
 {
     uint8_t readback;
     int err;
 
-    kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+    kvm_remove_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
 
-    err = kvm_insert_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+    err = kvm_insert_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
     if (err) {
         vmi_debug("[%s] kvm_insert_breakpoint(0x%" PRIx64 ") failed: %d",
-                  log_tag, (uint64_t)vmi_addr, err);
+                  log_tag, (uint64_t)addr, err);
         return false;
     }
 
-    if (cpu_memory_rw_debug(cs, vmi_addr, &readback, 1, 0) != 0) {
+    if (cpu_memory_rw_debug(cs, addr, &readback, 1, 0) != 0) {
         vmi_debug("[%s] verification read itself failed -- address "
                   "translation likely not established yet", log_tag);
-        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+        kvm_remove_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
         return false;
     }
 
     if (readback != 0xcc) {
         vmi_debug("[%s] readback=0x%02x, NOT 0xcc (Phase 5-style silent "
                   "failure)", log_tag, readback);
-        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+        kvm_remove_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
         return false;
     }
 
-    vmi_debug("[%s] readback=0xcc confirmed", log_tag);
+    vmi_debug("[%s] readback=0xcc confirmed at 0x%" PRIx64, log_tag,
+              (uint64_t)addr);
+    return true;
+}
+
+/*
+ * Arms every configured hook: the syscall entry, plus (Phase 8) the
+ * return point if return capture is enabled. Both live in the same
+ * kernel text page and are overwritten by the same one-shot fw_cfg
+ * transfer (Phase 7), so they are always armed together; success means
+ * all of them stuck.
+ */
+static bool vmi_arm_once(CPUState *cs, const char *log_tag)
+{
+    if (!vmi_arm_addr(cs, vmi_addr, log_tag)) {
+        return false;
+    }
+    if (vmi_ret_addr && !vmi_arm_addr(cs, vmi_ret_addr, log_tag)) {
+        kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+        return false;
+    }
     return true;
 }
 
@@ -286,9 +344,16 @@ void vmi_monitor_kernel_loaded(CPUState *cs)
     }
 }
 
+static void vmi_flush_pending(const char *why);
+
 static void vmi_vm_state_change(void *opaque, bool running, RunState state)
 {
     vmi_debug("[vm_state_change] running=%d state=%d", running, state);
+    if (!running && vmi_enabled && state == RUN_STATE_SHUTDOWN) {
+        /* Syscalls still in flight (e.g. a blocked epoll_wait) would
+         * otherwise never reach the log at all. */
+        vmi_flush_pending("shutdown");
+    }
     if (!running || !vmi_enabled) {
         return;
     }
@@ -307,6 +372,7 @@ static void vmi_vm_state_change(void *opaque, bool running, RunState state)
 void vmi_monitor_init(void)
 {
     const char *addr_str = getenv("VMI_MONITOR_ADDR");
+    const char *ret_addr_str;
     const char *log_path;
 
     if (!addr_str) {
@@ -320,6 +386,18 @@ void vmi_monitor_init(void)
                      "parsed as a non-zero address -- monitor disabled",
                      addr_str);
         return;
+    }
+
+    ret_addr_str = getenv("VMI_MONITOR_RET_ADDR");
+    if (ret_addr_str) {
+        vmi_ret_addr = (target_ulong)strtoull(ret_addr_str, NULL, 0);
+        if (vmi_ret_addr == 0 || vmi_ret_addr == vmi_addr) {
+            error_report("vmi-monitor: VMI_MONITOR_RET_ADDR='%s' is not a "
+                         "usable return-hook address -- return-value "
+                         "capture disabled (entry-only logging)",
+                         ret_addr_str);
+            vmi_ret_addr = 0;
+        }
     }
 
     log_path = getenv("VMI_MONITOR_LOG");
@@ -339,67 +417,211 @@ void vmi_monitor_init(void)
     }
 
     vmi_state_table = g_hash_table_new(g_direct_hash, g_direct_equal);
+    vmi_step_addr_table = g_hash_table_new(g_direct_hash, g_direct_equal);
     vmi_enabled = true;
 
-    vmi_debug("[init] addr=0x%" PRIx64 " log=%s", (uint64_t)vmi_addr, log_path);
+    vmi_debug("[init] addr=0x%" PRIx64 " ret_addr=%s0x%" PRIx64 " log=%s",
+              (uint64_t)vmi_addr, vmi_ret_addr ? "" : "(disabled) ",
+              (uint64_t)vmi_ret_addr, log_path);
     info_report("vmi-monitor: enabled, addr=0x%" PRIx64 " log=%s",
                 (uint64_t)vmi_addr, log_path);
 
     qemu_add_vm_change_state_handler(vmi_vm_state_change, NULL);
 }
 
-static void vmi_log_syscall(CPUState *cs, CPUX86State *env)
+typedef enum VmiRetKind {
+    VMI_RET_NONE,       /* entry-only mode: no "ret" field (Phase 6/7 format) */
+    VMI_RET_VALUE,      /* "ret" (+ "err" for -4095..-1) and "dur_us" */
+    VMI_RET_UNFINISHED, /* return never observed: "ret": null, "unfinished": "<why>" */
+} VmiRetKind;
+
+static void vmi_write_event(int cpu_index, uint64_t num, const uint64_t *argv,
+                            const struct timeval *tv, VmiRetKind kind,
+                            int64_t ret, const struct timeval *ret_tv,
+                            const char *unfinished_why)
 {
-    uint64_t rax = env->regs[R_EAX];
-    const VmiSyscallInfo *info = vmi_syscall_lookup((int)rax);
+    const VmiSyscallInfo *info = vmi_syscall_lookup((int)num);
     char namebuf[32];
     const char *name;
     int argc;
-    uint64_t argv[6];
-    struct timeval tv;
     int i;
 
     if (info) {
         name = info->name;
         argc = info->argc;
     } else {
-        snprintf(namebuf, sizeof(namebuf), "syscall_%" PRIu64, rax);
+        snprintf(namebuf, sizeof(namebuf), "syscall_%" PRIu64, num);
         name = namebuf;
         argc = 6;
     }
 
+    fprintf(vmi_log_fp,
+            "{\"ts\": %ld.%06ld, \"cpu\": %d, \"rip\": \"0x%" PRIx64
+            "\", \"num\": %" PRIu64 ", \"syscall\": \"%s\", \"args\": [",
+            (long)tv->tv_sec, (long)tv->tv_usec, cpu_index,
+            (uint64_t)vmi_addr, num, name);
+    for (i = 0; i < argc && i < 6; i++) {
+        fprintf(vmi_log_fp, "%s\"0x%" PRIx64 "\"", i ? ", " : "", argv[i]);
+    }
+    fprintf(vmi_log_fp, "]");
+
+    if (kind == VMI_RET_VALUE) {
+        int64_t dur_us = (int64_t)(ret_tv->tv_sec - tv->tv_sec) * 1000000 +
+                         (ret_tv->tv_usec - tv->tv_usec);
+
+        fprintf(vmi_log_fp, ", \"ret\": %" PRId64, ret);
+        /* Linux ABI: -4095..-1 is -errno. Unikraft is binary-compatible
+         * with Linux here, and this host is x86_64 Linux too, so the
+         * host's errno names are the guest's. */
+        if (ret < 0 && ret >= -4095) {
+            const char *ename = strerrorname_np((int)-ret);
+
+            if (ename) {
+                fprintf(vmi_log_fp, ", \"err\": \"%s\"", ename);
+            } else {
+                fprintf(vmi_log_fp, ", \"err\": \"E%" PRId64 "\"", -ret);
+            }
+        }
+        fprintf(vmi_log_fp, ", \"dur_us\": %" PRId64, dur_us);
+    } else if (kind == VMI_RET_UNFINISHED) {
+        fprintf(vmi_log_fp, ", \"ret\": null, \"unfinished\": \"%s\"",
+                unfinished_why);
+    }
+
+    fprintf(vmi_log_fp, "}\n");
+    fflush(vmi_log_fp);
+}
+
+static void vmi_read_args(CPUX86State *env, uint64_t argv[6])
+{
     argv[0] = env->regs[R_EDI];
     argv[1] = env->regs[R_ESI];
     argv[2] = env->regs[R_EDX];
     argv[3] = env->regs[10]; /* r10 */
     argv[4] = env->regs[8];  /* r8  */
     argv[5] = env->regs[9];  /* r9  */
-
-    gettimeofday(&tv, NULL);
-
-    fprintf(vmi_log_fp,
-            "{\"ts\": %ld.%06ld, \"cpu\": %d, \"rip\": \"0x%" PRIx64
-            "\", \"num\": %" PRIu64 ", \"syscall\": \"%s\", \"args\": [",
-            (long)tv.tv_sec, (long)tv.tv_usec, cs->cpu_index,
-            (uint64_t)env->eip, rax, name);
-    for (i = 0; i < argc && i < 6; i++) {
-        fprintf(vmi_log_fp, "%s\"0x%" PRIx64 "\"", i ? ", " : "", argv[i]);
-    }
-    fprintf(vmi_log_fp, "]}\n");
-    fflush(vmi_log_fp);
 }
 
-void vmi_monitor_breakpoint_hit(X86CPU *cpu)
+static void vmi_write_unfinished(VmiPending *p, const char *why)
+{
+    vmi_write_event(p->cpu_index, p->num, p->argv, &p->tv,
+                    VMI_RET_UNFINISHED, 0, NULL, why);
+    p->used = false;
+}
+
+/* Logs every syscall whose return was never seen (e.g. exit_group, or a
+ * blocked epoll_wait at VM shutdown), oldest first. */
+static void vmi_flush_pending(const char *why)
+{
+    for (;;) {
+        VmiPending *oldest = NULL;
+        int i;
+
+        for (i = 0; i < VMI_PENDING_MAX; i++) {
+            if (vmi_pending[i].used &&
+                (!oldest || vmi_pending[i].seq < oldest->seq)) {
+                oldest = &vmi_pending[i];
+            }
+        }
+        if (!oldest) {
+            return;
+        }
+        vmi_write_unfinished(oldest, why);
+    }
+}
+
+static void vmi_handle_entry(CPUState *cs, CPUX86State *env)
+{
+    uint64_t rsp = env->regs[R_ESP];
+    uint64_t rcx = env->regs[R_ECX];
+    VmiPending *slot = NULL, *oldest = NULL;
+    struct timeval tv;
+    uint64_t argv[6];
+    int i;
+
+    gettimeofday(&tv, NULL);
+    vmi_read_args(env, argv);
+
+    if (!vmi_ret_addr) {
+        vmi_write_event(cs->cpu_index, env->regs[R_EAX], argv, &tv,
+                        VMI_RET_NONE, 0, NULL, NULL);
+        return;
+    }
+
+    for (i = 0; i < VMI_PENDING_MAX; i++) {
+        VmiPending *p = &vmi_pending[i];
+
+        if (p->used && p->rsp == rsp && p->rcx == rcx) {
+            /* Same caller context entered again without returning:
+             * the earlier one never came back through the return hook. */
+            vmi_debug("[entry] key rsp=0x%" PRIx64 " rcx=0x%" PRIx64
+                      " still pending -- logging previous as unfinished",
+                      rsp, rcx);
+            vmi_write_unfinished(p, "superseded");
+        }
+        if (!p->used) {
+            if (!slot) {
+                slot = p;
+            }
+        } else if (!oldest || p->seq < oldest->seq) {
+            oldest = p;
+        }
+    }
+    if (!slot) {
+        vmi_debug("[entry] pending table full -- evicting oldest as unfinished");
+        vmi_write_unfinished(oldest, "evicted");
+        slot = oldest;
+    }
+
+    slot->used = true;
+    slot->seq = vmi_pending_seq++;
+    slot->rsp = rsp;
+    slot->rcx = rcx;
+    slot->cpu_index = cs->cpu_index;
+    slot->num = env->regs[R_EAX];
+    memcpy(slot->argv, argv, sizeof(argv));
+    slot->tv = tv;
+}
+
+static void vmi_handle_return(CPUState *cs, CPUX86State *env)
+{
+    uint64_t rsp = env->regs[R_ESP];
+    uint64_t rcx = env->regs[R_ECX];
+    struct timeval ret_tv;
+    int i;
+
+    gettimeofday(&ret_tv, NULL);
+
+    for (i = 0; i < VMI_PENDING_MAX; i++) {
+        VmiPending *p = &vmi_pending[i];
+
+        if (p->used && p->rsp == rsp && p->rcx == rcx) {
+            vmi_write_event(p->cpu_index, p->num, p->argv, &p->tv,
+                            VMI_RET_VALUE, (int64_t)env->regs[R_EAX],
+                            &ret_tv, NULL);
+            p->used = false;
+            return;
+        }
+    }
+
+    vmi_debug("[ret] cpu=%d rax=0x%" PRIx64 " rsp=0x%" PRIx64 " rcx=0x%"
+              PRIx64 ": no matching entry -- not logged", cs->cpu_index,
+              (uint64_t)env->regs[R_EAX], rsp, rcx);
+}
+
+void vmi_monitor_breakpoint_hit(X86CPU *cpu, target_ulong pc)
 {
     CPUState *cs = CPU(cpu);
     CPUX86State *env = &cpu->env;
+    bool is_ret = vmi_ret_addr && pc == vmi_ret_addr;
     int err;
 
     /* Registers are not synced into env[] on every KVM exit -- must pull
      * them explicitly before reading env->regs[]/env->eip. */
     cpu_synchronize_state(cs);
 
-    vmi_debug("[hit] cpu=%d rip=0x%" PRIx64 " rax=%" PRIu64, cs->cpu_index,
+    vmi_debug("[%s] cpu=%d rip=0x%" PRIx64 " rax=%" PRIu64,
+              is_ret ? "ret" : "hit", cs->cpu_index,
               (uint64_t)env->eip, (uint64_t)env->regs[R_EAX]);
 
     if (!vmi_first_hit_seen) {
@@ -407,54 +629,63 @@ void vmi_monitor_breakpoint_hit(X86CPU *cpu)
         vmi_debug("[hit] first real hit observed -- breakpoint confirmed "
                   "live, stopping periodic re-verification");
         info_report("vmi-monitor: first real syscall hit observed at 0x%"
-                    PRIx64 " -- breakpoint confirmed live", (uint64_t)vmi_addr);
+                    PRIx64 " -- breakpoint confirmed live", (uint64_t)pc);
         if (vmi_arm_timer) {
             timer_free(vmi_arm_timer);
             vmi_arm_timer = NULL;
         }
     }
 
-    vmi_log_syscall(cs, env);
+    if (is_ret) {
+        vmi_handle_return(cs, env);
+    } else {
+        vmi_handle_entry(cs, env);
+    }
 
-    err = kvm_remove_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+    err = kvm_remove_breakpoint(cs, pc, 1, GDB_BREAKPOINT_SW);
     if (err) {
-        error_report("vmi-monitor: cpu %d: failed to remove breakpoint for "
-                     "step-over: %d -- leaving state NORMAL, guest will "
-                     "trap here again next time (capture may duplicate "
-                     "this event, but stays correct; guest is not stuck)",
-                     cs->cpu_index, err);
+        error_report("vmi-monitor: cpu %d: failed to remove breakpoint at 0x%"
+                     PRIx64 " for step-over: %d -- leaving state NORMAL, "
+                     "guest will trap here again next time (capture may "
+                     "duplicate this event, but stays correct; guest is not "
+                     "stuck)", cs->cpu_index, (uint64_t)pc, err);
         return;
     }
 
+    g_hash_table_insert(vmi_step_addr_table, cs, (gpointer)(uintptr_t)pc);
     cpu_single_step(cs, 1);
     vmi_monitor_set_state(cs, VMI_STEPPING);
 }
 
 void vmi_monitor_step_complete(CPUState *cs)
 {
+    target_ulong addr = (target_ulong)(uintptr_t)
+        g_hash_table_lookup(vmi_step_addr_table, cs);
     uint8_t readback = 0;
     bool verified;
     int err;
 
     cpu_single_step(cs, 0);
 
-    err = kvm_insert_breakpoint(cs, vmi_addr, 1, GDB_BREAKPOINT_SW);
+    err = kvm_insert_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
     if (err) {
         error_report("vmi-monitor: cpu %d: failed to reinsert breakpoint "
-                     "after step-over: %d -- syscall capture STOPPED for "
-                     "this vCPU (guest continues to run normally, "
-                     "unmonitored)", cs->cpu_index, err);
+                     "at 0x%" PRIx64 " after step-over: %d -- syscall "
+                     "capture STOPPED for this vCPU (guest continues to run "
+                     "normally, unmonitored)", cs->cpu_index, (uint64_t)addr,
+                     err);
         vmi_monitor_set_state(cs, VMI_NORMAL);
         return;
     }
 
-    verified = cpu_memory_rw_debug(cs, vmi_addr, &readback, 1, 0) == 0 &&
+    verified = cpu_memory_rw_debug(cs, addr, &readback, 1, 0) == 0 &&
                readback == 0xcc;
     if (!verified) {
-        error_report("vmi-monitor: cpu %d: reinsert reported success but "
-                     "memory readback shows 0x%02x, not 0xcc -- syscall "
-                     "capture STOPPED for this vCPU (guest continues to "
-                     "run normally, unmonitored)", cs->cpu_index, readback);
+        error_report("vmi-monitor: cpu %d: reinsert at 0x%" PRIx64 " reported "
+                     "success but memory readback shows 0x%02x, not 0xcc -- "
+                     "syscall capture STOPPED for this vCPU (guest continues "
+                     "to run normally, unmonitored)", cs->cpu_index,
+                     (uint64_t)addr, readback);
         vmi_monitor_set_state(cs, VMI_NORMAL);
         return;
     }

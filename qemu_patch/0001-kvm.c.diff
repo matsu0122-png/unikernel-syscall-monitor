@@ -1,5 +1,5 @@
 --- pristine/target/i386/kvm/kvm.c	2021-12-15 05:42:02.000000000 +0900
-+++ patched/target/i386/kvm/kvm.c	2026-08-23 14:29:02.769571965 +0900
++++ patched/target/i386/kvm/kvm.c	2026-10-12 10:58:36.912957036 +0900
 @@ -52,6 +52,8 @@
  #include "exec/memattrs.h"
  #include "trace.h"
@@ -52,8 +52,9 @@
      } else if (kvm_find_sw_breakpoint(cs, arch_info->pc)) {
 -        ret = EXCP_DEBUG;
 +        /*
-+         * VMI syscall monitor (Phase 6): only claim this int3 if it is at
-+         * our own configured address AND this vCPU is in VMI_NORMAL (i.e.
++         * VMI syscall monitor (Phase 6/8): only claim this int3 if it is at
++         * one of our own configured addresses (syscall entry, or -- Phase
++         * 8 -- the syscall return point) AND this vCPU is in VMI_NORMAL (i.e.
 +         * we are not already mid-step-over here, which should not happen
 +         * but is checked rather than assumed). Any other software
 +         * breakpoint -- including a real gdb session's own breakpoints,
@@ -61,10 +62,9 @@
 +         * has independently taken over -- falls through to the existing
 +         * ret = EXCP_DEBUG path unchanged, exactly as stock QEMU does.
 +         */
-+        if (vmi_monitor_is_enabled() &&
-+            arch_info->pc == vmi_monitor_addr() &&
++        if (vmi_monitor_is_hook_addr(arch_info->pc) &&
 +            vmi_monitor_get_state(cs) == VMI_NORMAL) {
-+            vmi_monitor_breakpoint_hit(cpu);
++            vmi_monitor_breakpoint_hit(cpu, arch_info->pc);
 +            vmi_consumed = true;
 +        } else {
 +            ret = EXCP_DEBUG;
