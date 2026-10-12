@@ -23,10 +23,30 @@ starts (boot time itself is never included in the measured window).
 Usage:
     python3 bench_overhead_inline.py --reps 3 --requests 200 --concurrency 5 \
         --qemu /home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64
+
+    # Phase 8: also arm the return hook (VMI_MONITOR_RET_ADDR) in B
+    python3 bench_overhead_inline.py --ret ...
+
+    # A/B only, alternating A,B,A,B,... with a fresh instance per trial
+    # (one ab run per instance, after a warmup), raw rows to CSV
+    python3 bench_overhead_inline.py --ret --alternate 5 --requests 300 \
+        --concurrency 5 --csv logs/bench_p8_ab.csv
+
+--alternate exists because this unikernel falls over after roughly 1,500
+requests per instance, and because interleaving A and B spreads slow
+drift on the host (other load, frequency scaling) over both conditions
+instead of biasing whichever ran later. In B, each trial is checked for
+the monitor actually being live: >0 JSONL events, and nothing in
+<log>.debug.log about a failed arm or (with --ret) an unmatched return.
+A trial failing that check is kept in the CSV and marked invalid, not
+dropped.
 """
 import argparse
+import csv
 import json
 import os
+import re
+import statistics
 import subprocess
 import sys
 import time
@@ -38,15 +58,26 @@ sys.path.insert(0, str(HERE))
 
 from attach_gdbstub import find_instance_runtime_dir, find_free_port, attach_gdbserver  # noqa: E402
 from gdb_session import launch_gdb_capture, stop_gdb_capture  # noqa: E402
-from bench_overhead import run_ab, run_ab_reps, summarize, print_summary  # noqa: E402
-from run_capture_inline import resolve_syscall_addr  # noqa: E402
+from bench_overhead import URL, AB_PATTERNS, run_ab, run_ab_reps, summarize, print_summary  # noqa: E402
+from run_capture_inline import resolve_syscall_addr, resolve_syscall_ret_addr  # noqa: E402
 
 DEFAULT_QEMU = "/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64"
 BOOT_SETTLE_S = 3.0
+WARMUP_REQUESTS = 50
+
+# Lines vmi-syscall-monitor.c writes to <log>.debug.log when a hook did
+# not get armed, or (return hook) a return could not be paired.
+DEBUG_FAILURE_MARKERS = (
+    "failed",            # kvm_insert_breakpoint() / verification read / boot-sync arm FAILED
+    "NOT 0xcc",
+    "giving up",
+    "reached max attempts",
+    "no matching entry",
+)
 
 
 def kraft_run(name: str, qemu_path: str, env_extra: dict) -> None:
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VMI_MONITOR_")}
     env.update(env_extra)
     cmd = ["kraft", "run", "-d", "-p", "8080:80", "--name", name]
     if qemu_path:
@@ -61,12 +92,18 @@ def stop_and_remove(name: str) -> None:
     subprocess.run(["kraft", "rm", name], check=False)
 
 
+def monitor_env(addr: int, ret_addr, log_path: Path) -> dict:
+    env = {"VMI_MONITOR_ADDR": hex(addr), "VMI_MONITOR_LOG": str(log_path)}
+    if ret_addr is not None:
+        env["VMI_MONITOR_RET_ADDR"] = hex(ret_addr)
+    return env
+
+
 def run_condition_custom_qemu(label: str, name: str, qemu_path: str, addr: int,
-                               monitor_enabled: bool, args) -> list:
+                               monitor_enabled: bool, args, ret_addr=None) -> list:
     env_extra = {}
     if monitor_enabled:
-        env_extra["VMI_MONITOR_ADDR"] = hex(addr)
-        env_extra["VMI_MONITOR_LOG"] = str(HERE / "logs" / f"bench_inline_{name}.jsonl")
+        env_extra = monitor_env(addr, ret_addr, HERE / "logs" / f"bench_inline_{name}.jsonl")
     print(f"[bench3] starting {label} instance {name!r} (custom qemu, "
           f"monitor={'ON' if monitor_enabled else 'off'})")
     kraft_run(name, qemu_path, env_extra)
@@ -102,13 +139,142 @@ def run_condition_gdb(args) -> list:
     return reps
 
 
+def run_ab_saving(requests: int, concurrency: int, out_path: Path) -> dict:
+    """run_ab(), but keeps ab's full output and also parses the
+    connection-time "Total:" row (mean/max), which the percentiles alone
+    don't show."""
+    out = subprocess.run(["ab", "-n", str(requests), "-c", str(concurrency), URL],
+                         capture_output=True, text=True, timeout=120)
+    out_path.write_text(out.stdout + out.stderr)
+    result = {}
+    for key, pattern in AB_PATTERNS.items():
+        m = pattern.search(out.stdout)
+        if m is None:
+            raise RuntimeError(f"could not parse {key!r} from ab output (see {out_path})")
+        result[key] = float(m.group(1))
+    m = re.search(r"^Total:\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\d+)", out.stdout, re.MULTILINE)
+    result["total_mean_ms"], result["total_max_ms"] = (float(m.group(2)), float(m.group(5))) if m else (None, None)
+    return result
+
+
+def check_monitor(log_path: Path, addr: int, ret_addr) -> dict:
+    """Did the monitor really run in this trial? Read after the instance
+    is stopped, so QEMU has flushed the unfinished entries too."""
+    debug_path = Path(str(log_path) + ".debug.log")
+    events = ret_events = accept4 = 0
+    if log_path.exists():
+        for line in open(log_path):
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            events += 1
+            ret_events += evt.get("ret") is not None
+            accept4 += evt.get("syscall") == "accept4"
+    debug = debug_path.read_text(errors="ignore") if debug_path.exists() else ""
+    problems = sorted({m for m in DEBUG_FAILURE_MARKERS if m in debug})
+    if events == 0:
+        problems.append("0 JSONL events")
+    if not debug:
+        problems.append("no debug.log")
+    hooks = [addr] + ([ret_addr] if ret_addr is not None else [])
+    for h in hooks:
+        if f"readback=0xcc confirmed at {h:#x}" not in debug:
+            problems.append(f"arm at {h:#x} never confirmed")
+    if ret_addr is not None and ret_events == 0:
+        problems.append("no events with a return value")
+    return {"events": events, "ret_events": ret_events, "accept4": accept4,
+            "valid": not problems, "problems": problems}
+
+
+def run_alternating(args, addr: int, ret_addr) -> int:
+    raw_dir = HERE / "logs" / "bench_p8_raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for trial in range(1, args.alternate + 1):
+        for cond in ("A", "B"):
+            name = f"vmibenchalt{cond.lower()}{trial}"
+            env_extra, log_path = {}, None
+            if cond == "B":
+                log_path = raw_dir / f"B_trial{trial}.jsonl"
+                for p in (log_path, Path(str(log_path) + ".debug.log")):
+                    p.unlink(missing_ok=True)
+                env_extra = monitor_env(addr, ret_addr, log_path)
+            print(f"\n[bench3] trial {trial}/{args.alternate} condition {cond}: "
+                  f"starting {name!r} ({' '.join(f'{k}={v}' for k, v in env_extra.items()) or 'monitor off'})")
+            kraft_run(name, args.qemu, env_extra)
+            ab, error = None, ""
+            try:
+                run_ab(WARMUP_REQUESTS, args.concurrency)  # warmup, discard
+                ab = run_ab_saving(args.requests, args.concurrency,
+                                   raw_dir / f"{cond}_trial{trial}.ab.txt")
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                error = str(e).splitlines()[0]
+                print(f"[bench3] WARNING: trial {trial} {cond} failed: {error}")
+            finally:
+                stop_and_remove(name)
+            row = {"condition": cond, "trial": trial,
+                   "req_per_s": ab and ab["requests_per_sec"],
+                   "mean_latency_ms": ab and ab["mean_ms"],
+                   "p50_ms": ab and ab["p50_ms"], "p99_ms": ab and ab["p99_ms"],
+                   "failed_requests": ab and ab["failed_requests"],
+                   "ab_total_mean_ms": ab and ab["total_mean_ms"],
+                   "ab_total_max_ms": ab and ab["total_max_ms"],
+                   "events": "", "ret_events": "", "accept4": "",
+                   "monitor_valid": "", "note": error}
+            if cond == "B":
+                chk = check_monitor(log_path, addr, ret_addr)
+                row.update({k: chk[k] for k in ("events", "ret_events", "accept4")})
+                row["monitor_valid"] = chk["valid"]
+                row["note"] = "; ".join(filter(None, [error] + chk["problems"]))
+            if ab is None:
+                row["monitor_valid"] = False if cond == "B" else ""
+            print(f"[bench3] -> {row}")
+            rows.append(row)
+
+    csv_path = Path(args.csv)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"\n[bench3] wrote {csv_path}")
+
+    print("\n=== req/s by condition (B: valid trials only) ===")
+    means = {}
+    for cond in ("A", "B"):
+        vals = [r["req_per_s"] for r in rows if r["condition"] == cond and r["req_per_s"]
+                and r["monitor_valid"] is not False]
+        if not vals:
+            print(f"{cond}: no usable trials")
+            continue
+        means[cond] = statistics.mean(vals)
+        sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+        print(f"{cond}: n={len(vals)} mean={means[cond]:.1f} sd={sd:.1f} "
+              f"min={min(vals):.1f} max={max(vals):.1f}")
+    if len(means) == 2:
+        print(f"B / A = {100 * means['B'] / means['A']:.1f}%")
+    return 0
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--requests", type=int, default=200)
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--qemu", default=DEFAULT_QEMU)
     parser.add_argument("--out", default=str(HERE / "logs" / "bench_overhead_inline_result.json"))
+    parser.add_argument("--ret", action="store_true",
+                         help="also set VMI_MONITOR_RET_ADDR (Phase 8 return-value capture) in the "
+                              "monitored condition; address resolved via objdump like "
+                              "run_capture_inline.py")
+    parser.add_argument("--alternate", type=int, default=0, metavar="N",
+                         help="run only A (monitor off) and B (monitor on), alternating "
+                              "A,B,A,B,... for N trials each; fresh instance + warmup + one ab "
+                              "run per trial; --reps is ignored")
+    parser.add_argument("--csv", default=str(HERE / "logs" / "bench_overhead_inline_alternate.csv"),
+                         help="raw per-trial output for --alternate")
     args = parser.parse_args()
 
     if not Path(args.qemu).is_file():
@@ -117,6 +283,12 @@ def main() -> int:
 
     addr = resolve_syscall_addr()
     print(f"[bench3] _ukplat_syscall = {hex(addr)}")
+    ret_addr = resolve_syscall_ret_addr(addr) if args.ret else None
+    if ret_addr is not None:
+        print(f"[bench3] syscall return hook = {hex(ret_addr)}")
+
+    if args.alternate:
+        return run_alternating(args, addr, ret_addr)
 
     results = {}
 
@@ -126,7 +298,7 @@ def main() -> int:
     print_summary("A. baseline_custom (custom qemu, monitor disabled)", results["baseline_custom"]["summary"])
 
     inline_reps = run_condition_custom_qemu(
-        "inline", "vmibench3inline", args.qemu, addr, True, args)
+        "inline", "vmibench3inline", args.qemu, addr, True, args, ret_addr)
     results["inline"] = {"per_rep": inline_reps, "summary": summarize(inline_reps)}
     print_summary("B. inline (custom qemu, VMI monitor active, no gdb)", results["inline"]["summary"])
 

@@ -15,7 +15,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 5 (capture from boot, not just after-the-fact attach): investigated, blocked.** See below. `run_capture.py` still only captures from whenever it attaches (a few seconds into an already-running guest); `run_capture_from_boot.py` documents why racing kraftkit's own boot sequence doesn't currently work.
 - **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
-- **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Costs a further ~40% throughput (~840-940 vs ~1360-1630 req/s); `--no-ret` restores Phase 6/7 entry-only behavior.
+- **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
 
 ## Phase 1 result
 
@@ -500,16 +500,79 @@ whereas an older strace-enabled build showed `ENOSYS`; that build printed
 brk in the generic, non-`HAVE_uk_syscall_brk` form, i.e. it did not provide
 brk, while the current binary does (`brk-1` in `provided_syscalls.in`).
 
-**Overhead** (`ab -n 300 -c 5`, 3 reps each, same patched binary): with
-return capture ~844-942 req/s, `--no-ret` ~1358-1632 req/s (unchanged from
-Phase 6/7). This is expected: 4 VM exits per syscall instead of 2.
+**Overhead** (re-measured 2026-10-13 with
+`bench_overhead_inline.py --ret --alternate 5 --requests 300 --concurrency 5
+--csv logs/bench_p8_ab.csv`):
+
+- A = monitor off: patched QEMU, `VMI_MONITOR_*` unset.
+- B = proposed method: same patched QEMU, `VMI_MONITOR_ADDR=0x101000` and
+  `VMI_MONITOR_RET_ADDR=0x1010da`. Both addresses were resolved with
+  `nm`/`objdump`, the same way `run_capture_inline.py` does it.
+- Same QEMU binary, same unikernel image and same host for A and B.
+- Trials run in the order A1,B1,A2,B2,...,A5,B5. Each trial boots a fresh
+  instance, waits 3s, sends 50 warmup requests (discarded), then runs one
+  `ab -n 300 -c 5 http://localhost:8080/`, so each instance sees 350
+  requests in total, well under the ~1,500 at which it falls over.
+
+| condition | n | req/s mean | stddev | min | max | vs A |
+|---|---|---|---|---|---|---|
+| A. monitor off | 5 | 14,500.8 | 2,195.0 | 11,205.7 | 16,860.6 | 100% |
+| B. entry + return capture | 5 | 929.0 | 25.4 | 899.3 | 951.0 | **6.4%** |
+
+Mean latency (ab "Time per request", mean): A 0.35 ms, B 5.39 ms. ab's
+percentiles have only 1 ms resolution: A's p50/p99 are 0-1 ms, B's p50 is
+4-5 ms and its p99 is 5-6 ms. 0 failed requests in all 10 trials. Raw
+per-trial rows are in `logs/bench_p8_ab.csv`; full ab output, JSONL and
+debug logs are in `logs/bench_p8_raw/`, which is not committed.
+
+Monitor-validity check for B: all 5 trials are valid. Each trial had to
+meet all of these:
+
+- More than 0 JSONL events: 3,597-3,828 per trial.
+- All events carry a return value except one unfinished `epoll_wait` at
+  shutdown.
+- Exactly 350 `accept4`, i.e. every warmup and measured request was seen.
+- `readback=0xcc confirmed` for both hook addresses.
+- No arm failure, `NOT 0xcc`, give-up or `no matching entry` lines in the
+  debug log.
+
+The event count varies between trials only in the
+`epoll_wait`/`gettimeofday`/`clock_gettime` idle-loop counts. The
+per-request syscalls (`accept4`, `recvfrom`, `writev`, `pread64`, ...)
+are identical in every trial.
+
+Caveats:
+
+- A's run is very short: 300 requests take ~20-27 ms. That window is
+  sensitive to host noise, which explains A's 15% coefficient of variation
+  versus B's 2.7%. The host was not idle: a kind Kubernetes cluster and
+  otel/MISP containers were running, and the CPU governor was
+  `powersave`. A's absolute number is therefore the least certain figure
+  here. The ~94% drop does not depend on it: even A's slowest trial is
+  11.8x B's fastest.
+- B's numbers include the debug log, which writes and flushes one line per
+  hook hit. That is what Phase 8 does by default.
+- The older figures (844-942 req/s with return capture, 1,358-1,632 with
+  `--no-ret`) came from 3 reps on one instance, without alternation and
+  without a same-session baseline. They are superseded by the table
+  above. `--no-ret` was not re-measured in this run.
+
+Environment:
+
+- Host: Intel Core i7-9700K (8 cores / 8 threads, 3.6 GHz base, 4.9 GHz
+  max), 15 GiB RAM.
+- OS and kernel: Ubuntu 22.04.5 LTS, Linux 5.15.0-198-generic.
+- QEMU: 6.2.0 with the patch in `qemu_patch/`, binary
+  `/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64`.
+- Tools: kraft 0.12.16, ApacheBench 2.3, guest image
+  `.unikraft/build/nginx_qemu-x86_64`.
 
 **Compatibility**: with return capture on, lines are in *completion*
 order rather than entry order (identical for this single-threaded
 workload), and an unfinished line may appear at the end. `validate_strace.py`
 only reads `syscall` and is unaffected. `bench_overhead_inline.py`
-doesn't set `VMI_MONITOR_RET_ADDR`, so it still measures the entry-only
-mechanism.
+sets `VMI_MONITOR_RET_ADDR` only with `--ret`; without it, it still
+measures the entry-only mechanism.
 
 ## Notes for later phases
 
