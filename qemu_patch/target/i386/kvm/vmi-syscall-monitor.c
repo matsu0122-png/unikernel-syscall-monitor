@@ -1,5 +1,6 @@
 /*
- * Phase 6 inline syscall monitor (Phase 8: + return values). See
+ * Phase 6 inline syscall monitor (Phase 8: + return values; Phase 9:
+ * overhead-breakdown switches). See
  * vmi-syscall-monitor.h for the opt-in contract. Design background:
  * catalog/library/nginx/1.25/vmi_syscall_monitor/docs/phase6_inline_qemu_design.md
  */
@@ -59,6 +60,26 @@ typedef struct VmiPending {
 static VmiPending vmi_pending[VMI_PENDING_MAX];
 static uint64_t vmi_pending_seq;
 
+/*
+ * Phase 9: overhead-breakdown switches, each read once from the
+ * environment at init (any non-empty value other than "0" turns it on).
+ * All off = the Phase 8 behavior, unchanged.
+ *   VMI_MONITOR_NO_REGS     -- don't cpu_synchronize_state() or read any
+ *                              register on a hit: only trap -> remove ->
+ *                              single-step -> reinsert. Implies no JSONL
+ *                              (there is nothing to log).
+ *   VMI_MONITOR_NO_LOG      -- read registers and pair entry/return as
+ *                              usual, but don't format/write JSONL.
+ *   VMI_MONITOR_NO_DEBUGLOG -- drop the per-hit "[hit]"/"[ret]" lines from
+ *                              <log>.debug.log (startup/error lines stay).
+ * Hit counters are kept in every mode and written as one "[stats]" line
+ * at shutdown, so a run can be checked for a live monitor even when
+ * nothing else is logged.
+ */
+static bool vmi_no_regs, vmi_no_log, vmi_no_debuglog;
+static uint64_t vmi_entry_hits, vmi_ret_hits, vmi_ret_unmatched;
+static bool vmi_stats_written;
+
 #define VMI_ARM_RETRY_MS      200
 #define VMI_ARM_MAX_ATTEMPTS  100 /* ~20s total before giving up */
 
@@ -84,6 +105,32 @@ static void vmi_debug(const char *fmt, ...)
     va_end(ap);
     fputc('\n', vmi_debug_fp);
     fflush(vmi_debug_fp);
+}
+
+static bool vmi_env_flag(const char *name)
+{
+    const char *v = getenv(name);
+
+    return v && *v && strcmp(v, "0") != 0;
+}
+
+static void vmi_write_stats(const char *why)
+{
+    if (vmi_stats_written) {
+        return;
+    }
+    vmi_stats_written = true;
+    vmi_debug("[stats] %s: entry_hits=%" PRIu64 " ret_hits=%" PRIu64
+              " ret_unmatched=%" PRIu64 " no_regs=%d no_log=%d no_debuglog=%d",
+              why, vmi_entry_hits, vmi_ret_hits, vmi_ret_unmatched,
+              vmi_no_regs, vmi_no_log, vmi_no_debuglog);
+}
+
+static void vmi_atexit(void)
+{
+    /* Only if the VM never went through RUN_STATE_SHUTDOWN (e.g. killed
+     * by a signal that still runs exit handlers). */
+    vmi_write_stats("exit");
 }
 
 bool vmi_monitor_is_enabled(void)
@@ -353,6 +400,7 @@ static void vmi_vm_state_change(void *opaque, bool running, RunState state)
         /* Syscalls still in flight (e.g. a blocked epoll_wait) would
          * otherwise never reach the log at all. */
         vmi_flush_pending("shutdown");
+        vmi_write_stats("shutdown");
     }
     if (!running || !vmi_enabled) {
         return;
@@ -420,9 +468,18 @@ void vmi_monitor_init(void)
     vmi_step_addr_table = g_hash_table_new(g_direct_hash, g_direct_equal);
     vmi_enabled = true;
 
+    vmi_no_regs = vmi_env_flag("VMI_MONITOR_NO_REGS");
+    vmi_no_log = vmi_env_flag("VMI_MONITOR_NO_LOG");
+    vmi_no_debuglog = vmi_env_flag("VMI_MONITOR_NO_DEBUGLOG");
+    atexit(vmi_atexit);
+
     vmi_debug("[init] addr=0x%" PRIx64 " ret_addr=%s0x%" PRIx64 " log=%s",
               (uint64_t)vmi_addr, vmi_ret_addr ? "" : "(disabled) ",
               (uint64_t)vmi_ret_addr, log_path);
+    if (vmi_no_regs || vmi_no_log || vmi_no_debuglog) {
+        vmi_debug("[init] overhead-breakdown switches: no_regs=%d no_log=%d "
+                  "no_debuglog=%d", vmi_no_regs, vmi_no_log, vmi_no_debuglog);
+    }
     info_report("vmi-monitor: enabled, addr=0x%" PRIx64 " log=%s",
                 (uint64_t)vmi_addr, log_path);
 
@@ -445,6 +502,10 @@ static void vmi_write_event(int cpu_index, uint64_t num, const uint64_t *argv,
     const char *name;
     int argc;
     int i;
+
+    if (vmi_no_log) {
+        return;
+    }
 
     if (info) {
         name = info->name;
@@ -604,6 +665,7 @@ static void vmi_handle_return(CPUState *cs, CPUX86State *env)
         }
     }
 
+    vmi_ret_unmatched++;
     vmi_debug("[ret] cpu=%d rax=0x%" PRIx64 " rsp=0x%" PRIx64 " rcx=0x%"
               PRIx64 ": no matching entry -- not logged", cs->cpu_index,
               (uint64_t)env->regs[R_EAX], rsp, rcx);
@@ -616,13 +678,28 @@ void vmi_monitor_breakpoint_hit(X86CPU *cpu, target_ulong pc)
     bool is_ret = vmi_ret_addr && pc == vmi_ret_addr;
     int err;
 
-    /* Registers are not synced into env[] on every KVM exit -- must pull
-     * them explicitly before reading env->regs[]/env->eip. */
-    cpu_synchronize_state(cs);
+    if (is_ret) {
+        vmi_ret_hits++;
+    } else {
+        vmi_entry_hits++;
+    }
 
-    vmi_debug("[%s] cpu=%d rip=0x%" PRIx64 " rax=%" PRIu64,
-              is_ret ? "ret" : "hit", cs->cpu_index,
-              (uint64_t)env->eip, (uint64_t)env->regs[R_EAX]);
+    if (vmi_no_regs) {
+        if (!vmi_no_debuglog) {
+            vmi_debug("[%s] cpu=%d rip=0x%" PRIx64 " (no_regs)",
+                      is_ret ? "ret" : "hit", cs->cpu_index, (uint64_t)pc);
+        }
+    } else {
+        /* Registers are not synced into env[] on every KVM exit -- must
+         * pull them explicitly before reading env->regs[]/env->eip. */
+        cpu_synchronize_state(cs);
+
+        if (!vmi_no_debuglog) {
+            vmi_debug("[%s] cpu=%d rip=0x%" PRIx64 " rax=%" PRIu64,
+                      is_ret ? "ret" : "hit", cs->cpu_index,
+                      (uint64_t)env->eip, (uint64_t)env->regs[R_EAX]);
+        }
+    }
 
     if (!vmi_first_hit_seen) {
         vmi_first_hit_seen = true;
@@ -636,7 +713,9 @@ void vmi_monitor_breakpoint_hit(X86CPU *cpu, target_ulong pc)
         }
     }
 
-    if (is_ret) {
+    if (vmi_no_regs) {
+        /* nothing to record */
+    } else if (is_ret) {
         vmi_handle_return(cs, env);
     } else {
         vmi_handle_entry(cs, env);
@@ -644,6 +723,8 @@ void vmi_monitor_breakpoint_hit(X86CPU *cpu, target_ulong pc)
 
     err = kvm_remove_breakpoint(cs, pc, 1, GDB_BREAKPOINT_SW);
     if (err) {
+        vmi_debug("[error] cpu=%d remove breakpoint at 0x%" PRIx64
+                  " for step-over failed: %d", cs->cpu_index, (uint64_t)pc, err);
         error_report("vmi-monitor: cpu %d: failed to remove breakpoint at 0x%"
                      PRIx64 " for step-over: %d -- leaving state NORMAL, "
                      "guest will trap here again next time (capture may "
@@ -669,6 +750,9 @@ void vmi_monitor_step_complete(CPUState *cs)
 
     err = kvm_insert_breakpoint(cs, addr, 1, GDB_BREAKPOINT_SW);
     if (err) {
+        vmi_debug("[error] cpu=%d reinsert breakpoint at 0x%" PRIx64
+                  " after step-over failed: %d -- capture STOPPED",
+                  cs->cpu_index, (uint64_t)addr, err);
         error_report("vmi-monitor: cpu %d: failed to reinsert breakpoint "
                      "at 0x%" PRIx64 " after step-over: %d -- syscall "
                      "capture STOPPED for this vCPU (guest continues to run "
@@ -681,6 +765,9 @@ void vmi_monitor_step_complete(CPUState *cs)
     verified = cpu_memory_rw_debug(cs, addr, &readback, 1, 0) == 0 &&
                readback == 0xcc;
     if (!verified) {
+        vmi_debug("[error] cpu=%d reinsert at 0x%" PRIx64 " readback=0x%02x, "
+                  "NOT 0xcc -- capture STOPPED", cs->cpu_index,
+                  (uint64_t)addr, readback);
         error_report("vmi-monitor: cpu %d: reinsert at 0x%" PRIx64 " reported "
                      "success but memory readback shows 0x%02x, not 0xcc -- "
                      "syscall capture STOPPED for this vCPU (guest continues "

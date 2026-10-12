@@ -32,6 +32,10 @@ Usage:
     python3 bench_overhead_inline.py --ret --alternate 5 --requests 300 \
         --concurrency 5 --csv logs/bench_p8_ab.csv
 
+    # Phase 9: overhead breakdown, rounds of C0->C1->C2->C3->C4
+    python3 bench_overhead_inline.py --breakdown 5 --requests 300 \
+        --concurrency 5 --csv logs/bench_breakdown.csv
+
 --alternate exists because this unikernel falls over after roughly 1,500
 requests per instance, and because interleaving A and B spreads slow
 drift on the host (other load, frequency scaling) over both conditions
@@ -73,7 +77,19 @@ DEBUG_FAILURE_MARKERS = (
     "giving up",
     "reached max attempts",
     "no matching entry",
+    "[error]",           # Phase 9: step-over remove/reinsert failures
 )
+
+# Phase 9 overhead breakdown: each condition adds one stage on top of the
+# previous one. C1-C4 all arm both the entry and the return hook.
+BREAKDOWN_CONDITIONS = {
+    "C0": None,  # monitor off
+    "C1": {"VMI_MONITOR_NO_REGS": "1", "VMI_MONITOR_NO_LOG": "1", "VMI_MONITOR_NO_DEBUGLOG": "1"},
+    "C2": {"VMI_MONITOR_NO_LOG": "1", "VMI_MONITOR_NO_DEBUGLOG": "1"},
+    "C3": {"VMI_MONITOR_NO_DEBUGLOG": "1"},
+    "C4": {},    # Phase 8 default
+}
+STATS_RE = re.compile(r"\[stats\] \w+: entry_hits=(\d+) ret_hits=(\d+) ret_unmatched=(\d+)")
 
 
 def kraft_run(name: str, qemu_path: str, env_extra: dict) -> None:
@@ -187,6 +203,105 @@ def check_monitor(log_path: Path, addr: int, ret_addr) -> dict:
             "valid": not problems, "problems": problems}
 
 
+def check_breakdown(cond: str, log_path: Path, addr: int, ret_addr: int, expect_accept4: int) -> dict:
+    """Phase 9 validity check: the [stats] hit counters must show both hooks
+    firing in step (entry - ret is 0 or 1: the epoll_wait still blocked at
+    shutdown), and in the conditions that write JSONL every request must
+    show up as one accept4."""
+    debug_path = Path(str(log_path) + ".debug.log")
+    debug = debug_path.read_text(errors="ignore") if debug_path.exists() else ""
+    problems = sorted({m for m in DEBUG_FAILURE_MARKERS if m in debug})
+    for h in (addr, ret_addr):
+        if f"readback=0xcc confirmed at {h:#x}" not in debug:
+            problems.append(f"arm at {h:#x} never confirmed")
+    m = STATS_RE.search(debug)
+    entry = ret = None
+    if m is None:
+        problems.append("no [stats] line")
+    else:
+        entry, ret = int(m.group(1)), int(m.group(2))
+        if entry == 0:
+            problems.append("0 entry hits")
+        if not 0 <= entry - ret <= 1:
+            problems.append(f"entry/ret hits differ by {entry - ret}")
+    accept4 = None
+    if cond in ("C3", "C4"):
+        accept4 = sum(1 for line in open(log_path) if '"syscall": "accept4"' in line) \
+            if log_path.exists() else 0
+        if accept4 != expect_accept4:
+            problems.append(f"accept4={accept4}, expected {expect_accept4}")
+        events = sum(1 for _ in open(log_path)) if log_path.exists() else 0
+        if entry is not None and events != entry:
+            problems.append(f"JSONL has {events} events but {entry} entry hits")
+    return {"entry_hits": entry, "ret_hits": ret, "accept4": accept4,
+            "valid": not problems, "problems": problems}
+
+
+def run_breakdown(args, addr: int, ret_addr: int) -> int:
+    raw_dir = HERE / "logs" / "bench_breakdown_raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for rnd in range(1, args.breakdown + 1):
+        for cond, switches in BREAKDOWN_CONDITIONS.items():
+            name = f"vmibd{cond.lower()}r{rnd}"
+            env_extra, log_path = {}, None
+            if switches is not None:
+                log_path = raw_dir / f"{cond}_round{rnd}.jsonl"
+                for p in (log_path, Path(str(log_path) + ".debug.log")):
+                    p.unlink(missing_ok=True)
+                env_extra = {**monitor_env(addr, ret_addr, log_path), **switches}
+            print(f"\n[bench3] round {rnd}/{args.breakdown} {cond}: starting {name!r} "
+                  f"({' '.join(f'{k}={v}' for k, v in env_extra.items()) or 'monitor off'})")
+            kraft_run(name, args.qemu, env_extra)
+            ab, error = None, ""
+            try:
+                run_ab(WARMUP_REQUESTS, args.concurrency)  # warmup, discard
+                ab = run_ab_saving(args.requests, args.concurrency,
+                                   raw_dir / f"{cond}_round{rnd}.ab.txt")
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                error = str(e).splitlines()[0]
+                print(f"[bench3] WARNING: round {rnd} {cond} failed: {error}")
+            finally:
+                stop_and_remove(name)
+            row = {"condition": cond, "round": rnd,
+                   "req_per_s": ab and ab["requests_per_sec"],
+                   "mean_latency_ms": ab and ab["mean_ms"],
+                   "entry_hits": "", "ret_hits": "", "valid": ab is not None,
+                   "failed_requests": ab and ab["failed_requests"],
+                   "accept4": "", "note": error}
+            if switches is not None:
+                chk = check_breakdown(cond, log_path, addr, ret_addr,
+                                      WARMUP_REQUESTS + args.requests)
+                row.update({k: "" if chk[k] is None else chk[k]
+                            for k in ("entry_hits", "ret_hits", "accept4")})
+                row["valid"] = row["valid"] and chk["valid"]
+                row["note"] = "; ".join(filter(None, [error] + chk["problems"]))
+            print(f"[bench3] -> {row}")
+            rows.append(row)
+
+    csv_path = Path(args.csv)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"\n[bench3] wrote {csv_path}")
+
+    print("\n=== req/s by condition (valid rounds only) ===")
+    base = None
+    for cond in BREAKDOWN_CONDITIONS:
+        vals = [r["req_per_s"] for r in rows if r["condition"] == cond and r["valid"]]
+        if not vals:
+            print(f"{cond}: no valid rounds")
+            continue
+        mean = statistics.mean(vals)
+        base = base or mean
+        sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+        print(f"{cond}: n={len(vals)} mean={mean:.1f} sd={sd:.1f} min={min(vals):.1f} "
+              f"max={max(vals):.1f} ({100 * mean / base:.1f}% of C0)")
+    return 0
+
+
 def run_alternating(args, addr: int, ret_addr) -> int:
     raw_dir = HERE / "logs" / "bench_p8_raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +388,10 @@ def main() -> int:
                          help="run only A (monitor off) and B (monitor on), alternating "
                               "A,B,A,B,... for N trials each; fresh instance + warmup + one ab "
                               "run per trial; --reps is ignored")
+    parser.add_argument("--breakdown", type=int, default=0, metavar="N",
+                         help="Phase 9: N rounds of C0 (off), C1 (traps only), C2 (+registers), "
+                              "C3 (+JSONL), C4 (+per-hit debug log = Phase 8 default); fresh "
+                              "instance + warmup + one ab run per trial; implies --ret")
     parser.add_argument("--csv", default=str(HERE / "logs" / "bench_overhead_inline_alternate.csv"),
                          help="raw per-trial output for --alternate")
     args = parser.parse_args()
@@ -283,10 +402,12 @@ def main() -> int:
 
     addr = resolve_syscall_addr()
     print(f"[bench3] _ukplat_syscall = {hex(addr)}")
-    ret_addr = resolve_syscall_ret_addr(addr) if args.ret else None
+    ret_addr = resolve_syscall_ret_addr(addr) if args.ret or args.breakdown else None
     if ret_addr is not None:
         print(f"[bench3] syscall return hook = {hex(ret_addr)}")
 
+    if args.breakdown:
+        return run_breakdown(args, addr, ret_addr)
     if args.alternate:
         return run_alternating(args, addr, ret_addr)
 

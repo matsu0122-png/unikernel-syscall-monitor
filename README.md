@@ -16,6 +16,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
 - **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
+- **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
 
 ## Phase 1 result
 
@@ -573,6 +574,155 @@ workload), and an unfinished line may appear at the end. `validate_strace.py`
 only reads `syscall` and is unaffected. `bench_overhead_inline.py`
 sets `VMI_MONITOR_RET_ADDR` only with `--ret`; without it, it still
 measures the entry-only mechanism.
+
+## Phase 9: overhead breakdown
+
+Goal: find out where the Phase 8 slowdown goes. Phase 8 ran at 6.4% of the
+unmonitored throughput in `logs/bench_p8_ab.csv`.
+
+**Switches** (QEMU side, `qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`;
+details in `qemu_patch/README.md`). Each one removes one stage from the
+per-hit path, and with all of them unset the behavior is Phase 8's:
+
+- `VMI_MONITOR_NO_REGS`: skip `cpu_synchronize_state()` and every register
+  read. Skipping the sync also avoids writing the registers back before
+  the next `KVM_RUN`.
+- `VMI_MONITOR_NO_LOG`: no JSONL formatting or writing.
+- `VMI_MONITOR_NO_DEBUGLOG`: no per-hit debug line.
+
+Entry and return hits are always counted and written as one `[stats]`
+line at shutdown, so every run can be checked for a live monitor.
+
+**Conditions**: all use the same patched binary and image. C1-C4 arm both
+hooks (0x101000 / 0x1010da).
+
+| | switches | what runs per hook hit |
+|---|---|---|
+| C0 | `VMI_MONITOR_*` unset | nothing (monitor off) |
+| C1 | NO_REGS + NO_LOG + NO_DEBUGLOG | trap -> remove -> single-step -> reinsert |
+| C2 | NO_LOG + NO_DEBUGLOG | C1 + register sync/read, entry/return pairing |
+| C3 | NO_DEBUGLOG | C2 + JSONL |
+| C4 | none (= Phase 8) | C3 + per-hit debug log |
+
+**Method**:
+
+```
+python3 bench_overhead_inline.py --breakdown 5 --requests 300 --concurrency 5 \
+    --csv logs/bench_breakdown.csv
+```
+
+- 5 rounds, each in the order C0->C1->C2->C3->C4.
+- Each trial boots a fresh instance, waits 3s, sends 50 warmup requests,
+  then runs one `ab -n 300 -c 5`, so each instance sees 350 requests.
+- Run on 2026-10-13, 02:24-02:26 JST.
+
+**Validity**: all 25 trials are valid. Each trial had to meet these:
+
+- C1-C4: `entry_hits` > 0 and `entry_hits - ret_hits` = 1 every time (the
+  `epoll_wait` still blocked at shutdown).
+- C2-C4: `ret_unmatched=0`.
+- C3/C4: exactly 350 `accept4`, and the JSONL line count equals
+  `entry_hits`.
+- Both hooks confirmed armed, with no failure, `[error]` or
+  `no matching entry` lines.
+- 0 failed requests.
+
+Raw rows are in `logs/bench_breakdown.csv`; ab output and logs are in
+`logs/bench_breakdown_raw/`, which is not committed.
+
+**Throughput**:
+
+| | n | req/s mean | stddev | min | max | vs C0 |
+|---|---|---|---|---|---|---|
+| C0 off | 5 | 18,593.3 | 574.7 | 17,825.3 | 19,300.0 | 100% |
+| C1 traps only | 5 | 1,041.6 | 40.2 | 1,009.0 | 1,093.4 | 5.60% |
+| C2 + registers | 5 | 951.8 | 46.0 | 897.7 | 1,002.9 | 5.12% |
+| C3 + JSONL | 5 | 917.3 | 68.1 | 868.4 | 1,020.1 | 4.93% |
+| C4 + debug log (Phase 8) | 5 | 861.6 | 43.0 | 820.4 | 914.4 | 4.63% |
+
+**Per-syscall cost**:
+
+- Time per request is `1/(req/s)`.
+- Syscalls per request is `(entry_hits - 291) / 350`. The 291 boot-time
+  syscalls before the first `accept4` were identical in all 10 C3/C4
+  JSONL logs, and 350 is the number of requests per instance (warmup +
+  measured). The idle-loop syscalls between and after the two ab runs
+  are not excluded.
+- The average is 10.57 syscalls per request over C1-C4, with a per-trial
+  range of 9.72-11.42.
+
+Two ways to turn the time differences into a cost per syscall:
+
+1. Divide the difference between condition means of time-per-request by
+   the C1-C4 average syscalls per request.
+2. Per trial, compute (time per request - C0 mean) / that trial's own
+   syscalls per request, then average per condition.
+
+| stage | method 1 | method 2 |
+|---|---|---|
+| C0->C1 trap mechanism | 907.3 us/req -> **85.9 us/syscall** | **90.0 +/- 1.2** |
+| C1->C2 register sync/read | 91.5 us/req -> **8.7 us/syscall** | **1.7** |
+| C2->C3 JSONL write | 42.1 us/req -> **4.0 us/syscall** | **6.5** |
+| C3->C4 per-hit debug log | 68.2 us/req -> **6.5 us/syscall** | **5.4** |
+| total C0->C4 | 1,109.1 us/req -> 105.0 us/syscall | 103.6 +/- 1.3 |
+
+Cumulative overhead per syscall under method 2 is C1 90.0 +/- 1.2, C2
+91.7 +/- 0.7, C3 98.2 +/- 2.0 and C4 103.6 +/- 1.3 us. Within a condition
+these spread by only 1-2 us. Under method 1, by contrast, req/s spreads by
+4-7% because it is driven by how many syscalls each trial happened to
+make (see below). Method 2 is therefore the more reliable split. Both
+methods agree on the main result: **the trap mechanism alone is ~86-90 of
+the ~104 us per syscall (~87%)**. What the monitor does with the data
+(register sync, JSONL and debug log) adds about 14 us, or ~13%.
+
+Each syscall costs 4 VM exits to QEMU userspace (int3 + single-step at
+both hooks), so C1's ~90 us is about 22 us per exit. That is far more than
+a bare KVM exit. The likely causes, not measured individually here: each
+step-over does `kvm_remove_breakpoint()` / `kvm_insert_breakpoint()`
+(guest memory write + `KVM_SET_GUEST_DEBUG`), `cpu_single_step()` (another
+`KVM_SET_GUEST_DEBUG`) and a readback verify. Reducing that path (e.g.
+avoiding remove/single-step/reinsert per hit) is where any significant
+speedup would have to come from. Logging-side optimizations can recover
+at most ~13%.
+
+**Caveats / anomalies**:
+
+- *Syscalls per request vary between trials and correlate with req/s.* The
+  difference is in the `epoll_wait`/`gettimeofday`/`clock_gettime` idle
+  loop: how many connections one `epoll_wait` returns depends on timing.
+  Examples: C3 round 4 had 3,708 hits and 1,020 req/s, against
+  4,125-4,185 hits and ~870 req/s in the other C3 rounds; C2 rounds 2/4/5
+  had 4,203-4,290 hits and 898-931 req/s. This is why C2-C4 overlap in
+  req/s and why method 1's C1->C2 figure (8.7 us) is inflated. The C2
+  trials happened to average more syscalls per request (10.89 vs C1's
+  10.08), possibly because a slower handler batches less per
+  `epoll_wait`.
+- C0 has no hit counter, so its syscalls per request is not measured. The
+  per-syscall figures assume the request path is the same; C0's 53.8 us
+  per request is subtracted as a whole.
+- The C4 (Phase 8) mean is 861.6 req/s, lower than `bench_p8_ab.csv`'s 929.0.
+  Per syscall the two runs agree (~103 us in both). The earlier B trials
+  just made fewer syscalls per request (3,597-3,828 events vs 3,819-4,185
+  here).
+- C0 is higher than in `bench_p8_ab.csv` (18,593 vs 14,501 req/s) and
+  steadier (stddev 3.1% vs 15%), most likely because of the host changes
+  below. The two runs' absolute numbers should not be mixed.
+
+**Environment**:
+
+- Host: Intel Core i7-9700K (8C/8T, 3.6 GHz base / 4.9 GHz max), 15 GiB
+  RAM, Ubuntu 22.04.5 LTS, Linux 5.15.0-198-generic.
+- QEMU 6.2.0 + `qemu_patch/`, rebuilt with the Phase 9 switches. The same
+  binary was used for all conditions.
+- Tools: kraft 0.12.16, ApacheBench 2.3.
+- Host preparation: CPU governor `performance` on all 8 CPUs (default here
+  is `powersave`). The 5 long-running containers (kind-control-plane,
+  otel jaeger/collector/prometheus, misp-docker-db-1) were stopped for the
+  run and restarted afterwards.
+- Remaining load: CPU was ~100% idle before the run (`vmstat`). The load
+  average was still ~2.0-2.35 because of a D-state
+  `kworker/...acpi_thermal_pm` that uses no CPU. A second login session
+  was open.
 
 ## Notes for later phases
 

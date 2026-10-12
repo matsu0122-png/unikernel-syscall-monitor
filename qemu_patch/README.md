@@ -66,6 +66,19 @@ PKG_CONFIG_PATH=$HOME/local-deps/install/lib/pkgconfig \
 ninja qemu-system-x86_64
 ```
 
+After changing `vmi-syscall-monitor.c` (e.g. Phase 9's switches), rebuild
+by copying it over the one in the source tree and re-running ninja. Only
+that object and the final link are rebuilt:
+
+```
+cp /path/to/qemu_patch/target/i386/kvm/vmi-syscall-monitor.{c,h} target/i386/kvm/
+ninja -C build qemu-system-x86_64
+```
+
+The three `.diff` files are unchanged by Phase 9: they only touch existing
+QEMU files (`kvm.c`, `meson.build`, `fw_cfg.c`). All Phase 9 code is in
+the new `vmi-syscall-monitor.c`, which is shipped here as a whole file.
+
 (The `--firmwarepath` entries point at this host's existing
 `seabios`/`qemu-system-data`/`ipxe-qemu` packages -- a plain
 `--prefix=/usr/local` build otherwise fails to find `bios-256k.bin` /
@@ -96,6 +109,24 @@ python3 run_capture_inline.py --name vmiinline --duration 15 \
     --log logs/capture_inline.jsonl \
     --qemu /path/to/build/qemu-system-x86_64
 ```
+
+Phase 9 adds overhead-breakdown switches. They are read at startup, and
+any value other than empty or `0` turns a switch on. With all of them
+unset, behavior is exactly Phase 8:
+
+```
+export VMI_MONITOR_NO_REGS=1      # no cpu_synchronize_state()/register reads: only
+                                  # trap -> remove -> single-step -> reinsert (no JSONL)
+export VMI_MONITOR_NO_LOG=1       # read registers + pair entry/return, but write no JSONL
+export VMI_MONITOR_NO_DEBUGLOG=1  # no per-hit [hit]/[ret] lines in .debug.log
+                                  # (startup and error lines are still written)
+```
+
+In every mode, including the default, QEMU counts hook hits and writes one
+line to the debug log at VM shutdown:
+`[stats] shutdown: entry_hits=N ret_hits=M ret_unmatched=K no_regs=.. no_log=.. no_debuglog=..`.
+Step-over remove/reinsert failures, which used to go only to stderr (lost
+under `-daemonize`), are now also logged there as `[error] ...` lines.
 
 A second file, `<VMI_MONITOR_LOG>.debug.log`, gets diagnostic lines
 (arm attempts, hits, state transitions) -- needed because kraftkit runs
