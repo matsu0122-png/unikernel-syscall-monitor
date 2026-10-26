@@ -17,6 +17,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
 - **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
+- **Phase 9-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase9_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
 
 ## Phase 1 result
 
@@ -723,6 +724,65 @@ at most ~13%.
   average was still ~2.0-2.35 because of a D-state
   `kworker/...acpi_thermal_pm` that uses no CPU. A second login session
   was open.
+
+## Phase 9-0 result
+
+Goal: check, before writing any code, whether syscall capture can move from
+the patched QEMU to (a) a guest-side Unikraft library hooked into the
+syscall shim and (b) a distro QEMU sharing guest RAM as a file. Full
+citations: `docs/phase9_0_investigation.md`.
+
+**What was done**: read the Unikraft 0.20.0 tree in `../.unikraft/unikraft`
+and the QEMU 6.2 sources for the paths involved, and booted the verified
+image (`backup_verified_build/` md5) once on the **unmodified**
+`/usr/bin/qemu-system-x86_64` (6.2+dfsg-2ubuntu6.31) through a probe wrapper
+that adds `-object memory-backend-file,...,mem-path=/dev/shm/vmiprobe.mem,share=on
+-machine memory-backend=vmimem` (`kraft run --qemu <wrapper>`, port 8090).
+
+**Confirmed**:
+
+- Hooks: `uk_syscall_entertab_prio(fn, prio)` / `uk_syscall_exittab_prio(fn, prio)`
+  place a `static const` function pointer in a linker-collected table; fn
+  takes `struct uk_syscall_{enter,exit}_ctx *` (`execenv`, `nested_depth`,
+  `flags`). These are static data, active from image load, so they see `brk`.
+  At exit, `orig_rax`, the arguments and `rax` (= return value) are all in
+  `execenv->regs`, the same values Unikraft's strace prints.
+- The same tables also run for native in-kernel `uk_syscall_r_*` calls, with
+  `execenv == NULL` and `flags == 0`. The hook must filter on
+  `UK_SYSCALL_*_CTX_BINARY_SYSCALL`.
+- TLS: `__thread` in the hook is Unikraft's per-thread TLS (switched before
+  the enter table, back after the exit table), so a per-thread entry
+  timestamp pairs correctly across blocking calls.
+- `.bss` is zero before the first syscall: the image is an ELF32 multiboot
+  wrapper whose header has no `HAS_ADDR`, so QEMU's ELF path builds the
+  kernel buffer with `rom_copy()`, which zero-fills `p_memsz - p_filesz`.
+  **This contradicts the Phase 7 doc's claim that `HAS_ADDR` is set.** Phase
+  7's fix is unaffected, since both paths end in the same `FW_CFG_KERNEL_DATA`.
+- Clock: `ukplat_monotonic_clock()` is `rdtsc` + multiply, no port I/O.
+- kraftkit argv recorded. kraftkit also invokes the binary with `-version`
+  and `-accel help`. The second `-machine` is merged, HTTP works (3x 200).
+- Shared file: a symbol's address is its file offset. All 15 read-only
+  sections are byte-identical to the ELF. In `.text`, 37 bytes differ, all
+  boot page tables (`x86_bpt_*`) plus one boot relocation, none on the
+  syscall path. A `.bss` variable read from the host advanced in real time.
+  Readable with `O_RDONLY`/`PROT_READ` as a normal user. 64 MiB is below
+  any PCI hole.
+- All 16 NET-group syscalls are in `provided_syscalls.in`.
+
+**Unresolved / unverified**:
+
+- Exact upstream Unikraft commit (`~1eee9d4` in the config is the
+  enclosing catalog repo's sha, not Unikraft's).
+- That this host's KVM does not trap `rdtsc` (needs root to trace).
+- Whether LTO keeps hook functions in a dedicated `.text.vmitrace` section.
+- Why kraftkit no longer passes `-initrd` (HTTP works without it).
+- SMP: the build is single-lcpu. Per-lcpu rings are proposed, not tested.
+
+**Found along the way**: the shared file survives `kraft stop`/`kraft rm`
+(it must be removed by the wrapper/collector), and is created `0640` by the
+QEMU user. `../.unikraft/build/config` still has
+`CONFIG_LIBSYSCALL_SHIM_STRACE=y` from Phase 4 even though the binary is the
+non-strace backup.
 
 ## Notes for later phases
 
