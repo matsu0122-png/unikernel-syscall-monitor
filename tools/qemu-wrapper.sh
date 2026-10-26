@@ -52,7 +52,7 @@ GROUP=${VMITRACE_GROUP:-vmitrace}
 log() { echo "qemu-wrapper: $*" >&2; }
 
 is_launch=0
-mem_arg= name_arg= pidfile= monitor= kernel=
+mem_arg= name_arg= pidfile= monitor= kernel= netdev=
 prev=
 for a in "$@"; do
 	case $prev in
@@ -61,6 +61,7 @@ for a in "$@"; do
 	-name) name_arg=$a ;;
 	-pidfile) pidfile=$a ;;
 	-monitor) monitor=$a ;;
+	-netdev) netdev=$a ;;
 	esac
 	prev=$a
 done
@@ -139,6 +140,7 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 	printf '  "pidfile": %s,\n' "$(json_str "$pidfile")"
 	printf '  "monitor": %s,\n' "$(json_str "$monitor")"
 	printf '  "kernel": %s,\n' "$(json_str "$kernel")"
+	printf '  "hostfwd": %s,\n' "$(json_str "$netdev")"
 	printf '  "qemu": %s,\n' "$(json_str "$QEMU")"
 	printf '  "wrapper_pid": %d\n' $$
 	printf '}\n'
