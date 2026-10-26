@@ -1,9 +1,14 @@
-# Jaeger for the vmitrace collector (Phase 10-4).
+# Jaeger v2 for the vmitrace collector (Phase 10-4, upgraded before 10-5).
 #
 #   docker compose -f deploy/docker-compose.yml up -d
 #   collector/.venv/bin/python collector/vmitrace_collector.py ... \
 #       --otel otlp --otlp-endpoint localhost:14317
 #   UI: http://localhost:26686  (service "vmitrace")
+#
+# Image pinned by tag and digest (jaegertracing/jaeger 2.22.0, released
+# 2026-10-06). Jaeger v1 (all-in-one 1.57) is end of life since the end of
+# 2025. The built-in all-in-one configuration is used (OTLP receivers,
+# in-memory storage, UI on 16686).
 #
 # Host ports are 14317 / 26686 instead of 4317 / 16686 because this host
 # already runs an unrelated otel-collector + Jaeger on those ports. Both
@@ -12,10 +17,7 @@
 name: vmitrace
 services:
   jaeger:
-    image: jaegertracing/all-in-one:1.57
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
-      MEMORY_MAX_TRACES: "100000"
+    image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
     ports:
       - "127.0.0.1:14317:4317"     # OTLP gRPC
       - "127.0.0.1:26686:16686"    # UI + query API

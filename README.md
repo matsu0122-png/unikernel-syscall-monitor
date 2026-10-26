@@ -909,6 +909,13 @@ unverified; SMP untested; overhead not measured yet (10-5).
   The reader keeps its old mapping of a guest that is gone.
 - Hashing proves the bytes are equal at the moment of the check. A
   modification that is reverted between two checks is missed.
+- **The build nonce (header ABI v2) identifies a build. It does not
+  authenticate one.** It is stored in plain guest memory: the guest can
+  read it and write it, and anyone with the image can read it. It stops the
+  collector from pairing a manifest with the wrong build by mistake. It
+  cannot stop a compromised guest from presenting the expected nonce (and
+  header, and bitmap). Only the integrity checks of 10-6 address
+  tampering, and only within the limits above.
 
 ## Phase 10-2 result
 
@@ -1265,6 +1272,33 @@ collector/.venv/bin/python collector/vmitrace_collector.py \
 - The first UI screenshot attempt showed only the loading spinner:
   `--screenshot` fires on the load event, before the SPA's API call
   returns. Hence the delaying wrapper page.
+
+### 10-4 update: Jaeger v2 (before 10-5)
+
+Jaeger v1 (all-in-one 1.57) reached end of life at the end of 2025.
+`deploy/docker-compose.yml` now runs **`jaegertracing/jaeger:2.22.0`**
+(latest 2.x on 2026-10-26, released 2026-10-06), pinned by tag and digest
+`sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17`.
+It uses the image's built-in all-in-one configuration, with the same host
+ports (127.0.0.1:14317 / 26686).
+
+- The v2 log shows the OTLP receivers on `[::]:4317` (gRPC) / `[::]:4318`
+  and the query/UI on `:16686`.
+- **Query API path changed**: v1's `/api/services` and `/api/traces` return
+  404 in v2. The API is `/api/v3/services` and `/api/v3/traces`
+  (`query.service_name`, `query.start_time_min/max`), which return OTLP
+  JSON.
+- Re-run (ALL build, 3 curls, `--otel otlp --otlp-endpoint
+  localhost:14317`) gave the same result as on 1.57: service `vmitrace`,
+  5 traces, 346 spans, 3 connection traces (`connection accept4 epoll_ctl
+  recvfrom [openat newfstatat] pread64 writev setsockopt recvfrom close`)
+  and 84 ERROR spans.
+- UI (headless Firefox, same method):
+  - `docs/img/phase10_4_jaeger_v2_search.png`: "5 traces", 3 connection
+    + 2 event-loop traces, error counts 4 and 80.
+  - `docs/img/phase10_4_jaeger_v2_connection_trace.png`: 11 spans, accept4
+    ... close.
+  - The v1 screenshots are kept for comparison.
 
 ## Notes for later phases
 
