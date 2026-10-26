@@ -1,4 +1,4 @@
-# Phase 9-0 (investigation only): moving to an unmodified QEMU
+# Phase 10-0 (investigation only): moving to an unmodified QEMU
 
 Status: **investigation complete, no implementation code written.** All
 citations are against the sources actually present on this host:
@@ -116,7 +116,7 @@ LTO is on (`CONFIG_OPTIMIZE_LTO=y`). The syscall_shim tables survive LTO with
 `__used` + `KEEP`, so a hook registered the same way will too. For the
 manifest's "instrumentation code range" the hook functions should get
 `__attribute__((section(".text.vmitrace")))` so their bytes are contiguous and
-findable; whether LTO keeps that grouping is to be checked in 9-1
+findable; whether LTO keeps that grouping is to be checked in 10-1
 (unverified).
 
 ## 2. Is everything live before the first syscall (`brk`)?
@@ -273,13 +273,13 @@ total order across lcpus were required, which it isn't for this tool.
 For now: implement the per-lcpu layout with `nr_lcpu = CONFIG_UKPLAT_LCPU_MAXCOUNT`
 (=1), so SMP needs no format change later.
 
-## 7. Open design questions (need a decision before 9-1)
+## 7. Open design questions (need a decision before 10-1)
 
 1. **Phase numbering**: README already has a committed "Phase 9: overhead
    breakdown" (7aaed2c). The new work is also called Phase 9-x.
 2. **Where the new build gets Unikraft**: Kraftfile pins `version: staging`
    (a moving branch). A fresh build in a new directory would refetch a
-   possibly newer Unikraft, so 9-5's comparison against Phase 7/8 would mix
+   possibly newer Unikraft, so 10-5's comparison against Phase 7/8 would mix
    versions. Proposal: copy `../.unikraft/unikraft`, `libs/lwip`,
    `libs/libelf`, `apps/elfloader` into the new build directory and point the
    Kraftfile at the local copies. (Whether kraftkit 0.12.16 accepts local
@@ -312,3 +312,25 @@ For now: implement the per-lcpu layout with `nr_lcpu = CONFIG_UKPLAT_LCPU_MAXCOU
 7. **Stale shared file**: the wrapper deletes `/dev/shm/<name>.mem` before
    exec and the collector deletes it after QEMU exits. OK to have the collector
    delete it, or should cleanup be only in the wrapper?
+
+## 8. Decisions (answers to §7, 2026-10-26)
+
+1. The new work is **Phase 10** (10-0 = this investigation). The earlier
+   "Phase 9: overhead breakdown" keeps its name.
+2. Unikraft, lib-lwip, lib-libelf and app-elfloader are **copied locally**
+   from `../.unikraft/`, with the source path and a sha256 of every file
+   recorded. Builds go in a new directory. First check whether kraftkit
+   accepts local paths, and report if it doesn't.
+3. Records carry the guest's `ukplat_monotonic_clock()`. The collector uses
+   min(host time - guest time) as the offset.
+4. Dedicated group `vmitrace`, shared file `0640`, collector and integrity
+   checker in that group. The collector mmaps only the ring range. The
+   "group members can read all guest RAM" trade-off goes in the README.
+5. Header = initialized PROGBITS. Records = NOBITS. `write_idx` and `dropped`
+   are per-vCPU arrays in the NOBITS part, and only the constant header part is
+   hashed.
+6. `exit` and `exit_group` also get an entry-time record with a flag.
+   Syscalls blocked at shutdown are not recorded (known limitation).
+7. Pre-launch removal by the wrapper. Post-exit removal by the collector,
+   which detects QEMU exit via the pidfile. Also evaluate "unlink right after
+   both processes have opened it" and report.

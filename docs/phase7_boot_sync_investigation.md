@@ -1,5 +1,19 @@
 # Phase 7 (investigation only): a deterministic sync point for capturing from the very first syscall
 
+> **Correction (added in Phase 10-0, 2026-10-26; the original text below is
+> kept unchanged).** §0 and §1 say the image's multiboot header has
+> `MULTIBOOT_HEADER_HAS_ADDR` set, and that QEMU's ELF branch can't be the one
+> taken because it rejects x86_64. Both are wrong. The image kraftkit boots is
+> an **ELF32 (i386)** wrapper produced by Unikraft's
+> `support/scripts/multiboot.py`. Its header at offset 52 is 12 bytes with
+> `flags = 0x3` and no `HAS_ADDR`. `load_multiboot()` therefore takes the
+> `load_elf()` + `rom_copy()` branch (`hw/i386/multiboot.c:191-217`). The
+> `EM_X86_64` check doesn't fire because `e_machine` is `EM_386`. **Phase 7's
+> mechanism and results are unaffected**: both branches put the kernel buffer
+> into `FW_CFG_KERNEL_DATA` (`multiboot.c:398`), and `fw_cfg_dma_transfer()`
+> is still the one write that lands it in guest RAM. Details:
+> `docs/phase10_0_investigation.md` §2.
+
 Status: **investigation complete, no code changed**. All citations below are
 against `qemu-6.2+dfsg` (the same Debian-packaged QEMU 6.2.0 source used for
 Phase 6, `apt-get source qemu-system-x86`, matching the installed

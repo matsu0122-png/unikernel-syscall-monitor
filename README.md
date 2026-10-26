@@ -17,7 +17,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
 - **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
-- **Phase 9-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase9_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
+- **Phase 10-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase10_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
 
 ## Phase 1 result
 
@@ -377,6 +377,13 @@ Investigation: `docs/phase7_boot_sync_investigation.md`. Implementation
 and verification: same doc's §13, plus `qemu_patch/` (`0003-fw_cfg.c.diff`,
 updated `vmi-syscall-monitor.{c,h}`).
 
+> **Correction (Phase 10-0)**: the "Root cause" paragraph below says the
+> multiboot header has `MULTIBOOT_HEADER_HAS_ADDR` set. It doesn't. The
+> booted image is an ELF32 wrapper with header `flags = 0x3`, so QEMU loads it
+> via `load_elf()` + `rom_copy()`. Both paths stage the kernel into
+> `FW_CFG_KERNEL_DATA`, so the fix and all Phase 7 results stand. The text is
+> kept as written. See `docs/phase10_0_investigation.md` §2.
+
 **Problem**: Phase 6's boot-time capture depended on winning a
 200ms-interval polling race against boot -- it worked *sometimes*
 (observed 0 to 289+ boot-time events, run to run) but never
@@ -725,7 +732,7 @@ at most ~13%.
   `kworker/...acpi_thermal_pm` that uses no CPU. A second login session
   was open.
 
-## Phase 9-0 result
+## Phase 10-0 result
 
 Goal: check, before writing any code, whether syscall capture can move from
 the patched QEMU to (a) a guest-side Unikraft library hooked into the
