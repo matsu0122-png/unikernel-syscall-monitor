@@ -96,7 +96,7 @@ def check_vendor(vendor):
         sys.exit(f"{vendor} does not match {VENDOR_SHA}")
 
 
-def kraftfile(vendor, groups):
+def kraftfile(vendor, groups, ring_order=None):
     text = (APP / "Kraftfile").read_text()
     for old, new in SOURCE_SWAPS:
         if old not in text:
@@ -108,6 +108,8 @@ def kraftfile(vendor, groups):
         lines += [f"      CONFIG_LIBVMITRACE_GROUP_{g}: 'y'\n" for g in groups]
         if "ALL" not in groups and "NET" not in groups:
             lines.append("      CONFIG_LIBVMITRACE_GROUP_NET: 'n'\n")
+        if ring_order is not None:
+            lines.append(f"      CONFIG_LIBVMITRACE_RING_ORDER: {ring_order}\n")
         text = text.replace("\ntargets:", "".join(lines) + "\ntargets:")
     return text
 
@@ -137,16 +139,18 @@ def seed_lwip(vendor, build_dir):
 def cmd_build(args):
     vendor = args.root / "vendor"
     check_vendor(vendor)
-    work = args.root / args.variant
+    name = args.variant + (f"-r{args.ring_order}" if args.ring_order else "")
+    work = args.root / name
     work.mkdir(parents=True, exist_ok=True)
     for name in ("Dockerfile", "conf", "wwwroot"):
         src, dst = APP / name, work / name
         if dst.exists():
             continue
         (shutil.copytree if src.is_dir() else shutil.copy2)(src, dst)
-    (work / "Kraftfile").write_text(kraftfile(vendor, GROUPS[args.variant]))
+    (work / "Kraftfile").write_text(
+        kraftfile(vendor, GROUPS[args.variant], args.ring_order))
     seed_lwip(vendor, work / ".unikraft" / "build")
-    log = args.root / f"{args.variant}-build.log"
+    log = args.root / f"{name}-build.log"
     cmd = ["kraft", "build", "--no-prompt", "--no-update", "--plat", "qemu",
            "--arch", "x86_64", "--log-type", "basic"]
     print(" ".join(cmd), f"(cwd {work}, log {log})")
@@ -170,6 +174,8 @@ def main():
     sub.add_parser("vendor")
     b = sub.add_parser("build")
     b.add_argument("variant", choices=sorted(GROUPS))
+    b.add_argument("--ring-order", type=int,
+                   help="LIBVMITRACE_RING_ORDER; build dir becomes <variant>-r<N>")
     args = ap.parse_args()
     {"vendor": cmd_vendor, "build": cmd_build}[args.cmd](args)
 

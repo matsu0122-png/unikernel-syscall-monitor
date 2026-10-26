@@ -22,6 +22,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`. Follow-ups before 10-3: `_ukplat_syscall` added as the 9th hash region (range found by disassembly), shared files moved to `/dev/shm/vmitrace/`, and security-model limits written down.
 - **Phase 10-3 (collector): done, tested as a single user.** See below. `collector/vmitrace_collector.py` maps only the header page and the ring range read-only, refuses to read while the guest header differs from the manifest, validates every record, and writes Phase-8-compatible JSONL (`validate_strace.py`: full match) plus OTel spans grouped into one trace per connection. Timestamps land within about +-1.5 ms of host time at 10 ms polling. The `vmitrace` group and separate users need root: commands are listed in the 10-3 section, not run.
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
+- **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size.
 
 ## Phase 1 result
 
@@ -1299,6 +1300,275 @@ ports (127.0.0.1:14317 / 26686).
   - `docs/img/phase10_4_jaeger_v2_connection_trace.png`: 11 spans, accept4
     ... close.
   - The v1 screenshots are kept for comparison.
+
+## Phase 10-5 result
+
+Goal: verify the unmodified-QEMU design against the same bars as the
+earlier phases (correctness from the first syscall, selective recording,
+return values), and measure its cost and its loss behaviour next to the
+legacy Phase 8 / Phase 9 monitor. Tools: `tools/bench_phase10.py` (modes
+`perf`, `loss`, `correct`), `tools/analyze_phase10.py`,
+`tools/compare_strace.py`. Result CSVs: `logs/bench_p10_perf.csv`,
+`logs/bench_p10_perf_long.csv`, `logs/bench_p10_loss.csv`,
+`logs/bench_p10_correct.csv`. Raw ab output, JSONL and stats are in
+`logs/bench_p10_raw/`, which is not committed.
+
+### Host state (recorded before/after each run, Phase 9 format)
+
+- Host: Intel Core i7-9700K (8C/8T), 15 GiB RAM, Ubuntu 22.04.5 LTS,
+  Linux 5.15.0-198-generic. QEMU 6.2.0 (Debian 1:6.2+dfsg-2ubuntu6.31) for
+  the Phase 10 conditions, and the patched build in `legacy/qemu_patch` for
+  the legacy ones. kraft 0.12.16, ApacheBench 2.3.
+- **CPU governor `powersave` on all 8 CPUs.** Phase 9 used `performance`.
+  Changing it needs root, so it was not changed.
+- **Containers left running**: `vmitrace-jaeger-1` (needed for the (ii)
+  conditions), `kind-control-plane`, `otel-config-jaeger-1`,
+  `otel-config-otel-collector-1`, `otel-config-prometheus-1`,
+  `misp-docker-db-1`. Phase 9 stopped the unrelated ones. They belong to
+  other work on this host and were not touched this time.
+- The week-old `vmiinline` instance (patched QEMU, port 8080) kept running.
+  All Phase 10 instances use port 8090.
+- Load average 1.90-2.13, `vmstat` idle 97%, one login session.
+- Run times: perf 2026-10-26 10:38-10:42 JST. The long-window
+  supplementary run and the loss grid followed in the same session.
+
+### 1. Correctness: offset-0 against the in-guest strace
+
+`bench_phase10.py correct --boots 10`:
+
+- Procedure: for each of 10 fresh boots of the ALL build, the collector is
+  started before `kraft run`, then one `curl` is sent (the workload of
+  `logs/strace_ground_truth.log`), then `tools/compare_strace.py` runs.
+- Comparison: element by element from index 0, both names and return
+  values. Return text is parsed: `OK` = 0, `... (-N)` = -N, `fd:N`,
+  `pid:N`, plain numbers and hex values are compared. `va:` addresses
+  (`brk`) and `time()` (the wall-clock second) are counted but not compared.
+
+**10/10 boots: 307/307 syscall names identical from index 0, i.e. the whole
+ground-truth log, and 262/262 comparable return values identical.** 38
+pointer returns and 7 `time()` returns were not compared. Every boot: 0 lost
+records, `offset_resets` 0. Phase 7 matched 134/134 before the comparison
+stopped at an unnamed `syscall_273`. The manifest's `syscall_nrs.h` names
+remove that limit.
+
+Not a capture difference, but worth knowing: the 5 ALL runs of the perf
+benchmark (ab instead of curl) diverge at index 301 (`close` where curl's
+run has `setsockopt`), with `recvfrom = 82` / `writev = 845` instead of 78 /
+850. ab sends HTTP/1.0 with a different `User-Agent`, and nginx closes
+the connection without the keep-alive `setsockopt`. The ground truth was
+taken with curl.
+
+### 2. Selective recording
+
+In the perf runs where the collector read everything (net-ii x4,
+netfd-ii x4), **0 records fell outside the group** and `unselected_nr` was
+0. NET recorded 8 distinct syscalls (714-716 records per run), NETFD 13
+(1,797-1,801).
+
+### 3. Return values vs. Phase 8
+
+The Phase 10 ALL capture (3 curls) and `logs/p8_ret.jsonl` (patched QEMU,
+3 curls), compared by syscall number from index 0:
+
+- The sequences are identical for 336 of 339 events. They then differ in
+  idle-loop timing (`epoll_wait` before or after `recvfrom`).
+- **329/329 return values identical** except the 7 `time()` results. The
+  Phase 8 reference values are all reproduced: `brk` = 0x402421000, 46
+  `openat = ENOENT`, `read = 832` x6, `connect = ENOENT`,
+  `pread64 = 612`, `writev = 850`, `recvfrom = 78`.
+
+### 4. Performance: 9 conditions, Phase 8 method
+
+- Phase 8 re-measurement method: every trial boots a fresh instance, waits
+  3 s, sends 50 warmup requests, then runs one `ab -n 300 -c 5`.
+- The conditions alternate within each round, 5 rounds.
+- (i) = the guest writes the ring and nobody reads it. (ii) = the
+  collector, started before boot, reads and exports OTLP to Jaeger.
+- legacy-p8 = `legacy/qemu_patch` QEMU with entry+return hooks, JSONL and
+  debug log (Phase 8, = Phase 9 C4). legacy-c1 = the same QEMU, traps only
+  (Phase 9 C1). Both use the Phase 1-9 image.
+- base runs through the same wrapper (shared-file RAM), so base vs. (i)
+  differs only by lib-vmitrace in the guest.
+
+| condition | n valid / run | req/s mean | stddev | min | max | vs base |
+|---|---|---|---|---|---|---|
+| base | 5/5 | 11,780.8 | 3,900.8 | 6,594.9 | 14,997.0 | 100.0% |
+| net-i | 5/5 | 13,988.0 | 5,048.1 | 6,256.9 | 18,263.7 | 118.7% |
+| net-ii | 4/5 | 14,623.1 | 3,569.3 | 9,580.4 | 17,957.6 | 124.1% |
+| netfd-i | 5/5 | 13,656.1 | 2,354.8 | 9,728.3 | 15,223.8 | 115.9% |
+| netfd-ii | 4/5 | 16,349.8 | 2,087.9 | 14,002.3 | 18,327.3 | 138.8% |
+| all-i | 5/5 | 13,907.5 | 4,564.6 | 6,174.4 | 18,338.5 | 118.1% |
+| all-ii | 5/5 | 15,970.5 | 591.4 | 15,257.1 | 16,851.1 | 135.6% |
+| legacy-p8 | 5/5 | 886.4 | 43.3 | 824.4 | 946.1 | 7.5% |
+| legacy-c1 | 5/5 | 935.1 | 57.7 | 884.4 | 1,001.2 | 7.9% |
+
+Per-syscall cost, **Phase 9 method 2**: per trial,
+`(1e6/req_s - base mean 94.79 us) / that trial's syscalls per request`,
+then the mean +/- sd per condition. Syscalls per request =
+`(write_idx or QEMU entry_hits - 291) / 350`. 291 records precede the first
+`accept4` in both the ALL and legacy captures, identical in every trial.
+base/net/netfd cannot count all syscalls, so they use the all-* mean, 10.71.
+
+| condition | syscalls/request | added us/syscall (method 2) | Phase 9 |
+|---|---|---|---|
+| net-i | 10.71 (all-* mean) | -1.02 +/- 4.14 | |
+| net-ii | 10.71 (all-* mean) | -2.10 +/- 2.04 | |
+| netfd-i | 10.71 (all-* mean) | -1.81 +/- 1.48 | |
+| netfd-ii | 10.71 (all-* mean) | -3.07 +/- 0.75 | |
+| all-i | 10.61 (own) | -1.07 +/- 4.20 | |
+| all-ii | 10.81 (own) | -2.97 +/- 0.23 | |
+| **legacy-p8** | 10.21 (own) | **101.43 +/- 1.29** | C4: 103.6 +/- 1.3 |
+| **legacy-c1** | 10.78 (own) | **90.64 +/- 1.48** | C1: 90.0 +/- 1.2 |
+
+Stats of the (ii) runs, as plan item 8 requires. The (i) runs have no
+reader. Their `write_idx` was read once after the measurement.
+
+| condition | write_idx mean | emitted = write_idx | lost | rejects | offset_resets | offset_uncertainty (max) | collector CPU s | requests seen |
+|---|---|---|---|---|---|---|---|---|
+| net-ii | 716 | 4/4 | 0 | 0 | 0 | 554 us | 0.33 | 350 |
+| netfd-ii | 1,798 | 4/4 | 0 | 0 | 0 | 685 us | 0.44 | 350 |
+| all-ii | 4,073 | 5/5 | 0 | 0 | 0 | 1,166 us | 0.66 | 350 |
+
+**What this shows, and what it does not**:
+
+- The legacy numbers reproduce Phase 9 in this session. The trap-based
+  monitor costs ~101 us per syscall (traps alone ~91 us). The two legacy
+  conditions are the only ones whose cost stands far above the noise.
+- **For every Phase 10 condition the cost is below this method's
+  resolution on this host, and the negative values are noise, not a
+  speed-up.**
+  - base has a 33% coefficient of variation. Every fast condition shows
+    both ~15-18k and ~6-10k req/s trials, in no particular round.
+  - A slow trial is slow throughout (ab median 1 ms instead of 0 ms, 45 ms
+    instead of 20 ms for the run), not one long request.
+  - A supplementary run of 12 base trials with `/proc/cpuinfo` MHz sampled
+    during ab found no clear relation between frequency and req/s (e.g.
+    9,821 req/s at 3,295 MHz mean, 14,968 at 2,903). Only 1-6 samples fit
+    into a 20-45 ms run, so the governor is **not ruled out, and the cause
+    is not established**.
+  - At ~95 us per request, a 300-request run lasts ~20-45 ms, which on a
+    non-idle host with `powersave` is too short to resolve ~1 us per
+    request.
+- Invalid trials: net-ii r5 and netfd-ii r2, both collector rc=1. Cause:
+  the collector read the wrapper's `<name>.json` while it was being
+  written (`JSONDecodeError`), because it starts before QEMU. Fixed after
+  this run: the wrapper writes `<name>.json.tmp` and renames it, and the
+  collector retries until the file parses. The 37 later collector starts
+  (10 correctness boots + 27 loss trials) all returned rc=0. The two
+  conditions were not re-run.
+
+**Supplementary: longer measurement window** (`perf --only base all-i
+all-ii --rounds 10 --requests 1300`; same fresh-instance/warmup/alternation
+scheme, 1,350 requests per instance, below the ~1,500 crash point):
+
+| condition | n | req/s mean | stddev | vs base | added us/syscall (method 2) |
+|---|---|---|---|---|---|
+| base | 10 | 14,701.4 | 995.2 | 100% | |
+| all-i | 10 | 14,359.3 | 588.3 | 97.7% | **+0.13 +/- 0.28** |
+| all-ii | 10 | 15,302.8 | 707.7 | 104.1% | -0.28 +/- 0.31 |
+
+- Base 68.31 us per request; 10.36 / 10.26 syscalls per request.
+- **ALL with nobody reading costs +0.13 us per syscall, sd 0.28 over 10
+  trials (standard error about 0.09): not distinguishable from zero, and at
+  least ~250x below the legacy 101 us.**
+- An upper bound of about 0.4-0.5 us per syscall (mean + 2-3 SE) is an
+  **estimate** from these 10 trials.
+- From the code, `vt_enter` + `vt_write` + `vt_exit` are ~0x22a bytes plus
+  two `rdtsc`-based clock reads and one TLS load per selected syscall, i.e.
+  on the order of 100-200 cycles (**estimate**, not measured).
+- **all-ii in this run lost 52% of its records** (73,358 of ~141,000): see 5.
+
+### 5. Loss vs. ring capacity, poll interval and load
+
+- `bench_phase10.py loss`: ALL builds with `LIBVMITRACE_RING_ORDER`
+  10/12/14 (1,024 / 4,096 / 16,384 records), collector `--poll-ms`
+  1/10/100 with `--otel none` (JSONL only), `ab -c 1/5/20`, `-n 1000`
+  after the 50 warmup.
+- The collector is started before boot, so every record ever written
+  could be read: loss = `write_idx - emitted`.
+- Each cell is one trial, 27 in total, all valid.
+
+| capacity | poll 1 ms: c1 / c5 / c20 | poll 10 ms | poll 100 ms |
+|---|---|---|---|
+| 1,024 | 4.6% / 41.1% / 36.8% | 40.3% / 58.9% / 60.9% | 82.0% / 78.8% / 86.6% |
+| 4,096 | 0 / 0 / 1.9% | 2.9% / 27.6% / 20.3% | 50.4% / 59.3% / 55.1% |
+| 16,384 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Load: 86k-173k syscalls/s during ab (c1 ~90k, c5/c20 ~110k-173k), 9,750-12,890
+records per instance. Full rows, including offset uncertainty and
+collector CPU, are in `logs/bench_p10_loss.csv`.
+
+Reading the table:
+
+- **16,384 shows no loss only because a whole run (<= 12,890 records)
+  fits in the ring.** The collector may fall arbitrarily far behind and
+  still catch up after ab ends. This is a burst-size result, not
+  steady-state capacity.
+- **Loss at 1 ms polling (1,024: 4.6-41%) means the collector itself is
+  too slow**, not just the poll interval. 168k syscalls/s is 168 records
+  per 1 ms, well within 1,024.
+  - The Python loop (validation, JSON encoding, file write per record)
+    does not sustain these rates. c1 at ~91k/s already loses 4.6% with
+    the smallest ring, so its sustained throughput is roughly below
+    ~90k records/s (**estimate**).
+  - With OTLP export it is worse: all-ii in the long run lost ~52% at
+    ~150k/s with a 4,096 ring, while the short perf runs (~4,100 records
+    per instance) lost nothing.
+- 100 ms polling also widens `offset_uncertainty` to tens of ms (up to
+  44.6 ms), as expected from the interval rule.
+- **Zero loss needs** (from these runs) either a ring holding the whole
+  burst (16,384 for these ~10-13k-record runs) or 4,096 with 1 ms polling
+  up to ~165k syscalls/s (1.9% loss at c20). Under sustained load, the
+  collector's throughput is the limit and must be raised (no per-record
+  Python work, batching, a compiled reader), which is beyond 10-5.
+
+**offset_resets (plan item 8): 2 of 27 loss trials, 0 elsewhere.** They are
+`1,024 / 1 ms / c5` and `16,384 / 1 ms / c1`, both at 1 ms polling.
+
+- Likely cause (**estimate, not verified**): the lower bound `t_prev - g`
+  assumes the guest took timestamp `g` after the previous poll read
+  `write_idx`. A record whose `g` is taken just before that read and which
+  is published just after violates this. It happens if the vCPU is
+  descheduled by the host between `ukplat_monotonic_clock()` and the seq
+  store.
+- The window is a few hundred ns plus any preemption, so the chance grows
+  as the poll interval shrinks, which fits both resets being at 1 ms.
+- Effect: the estimate restarts from one interval. In those two trials the
+  uncertainty ended at 48 us and 300 us.
+- Possible fix (not done): widen each lower bound by a margin, or keep
+  only the upper bounds after a reset.
+
+### 6. NET vs. NETFD (plan item 7)
+
+From the perf (ii) runs (ab workload, 350 requests per instance):
+
+| | records/request | connections | closed by close | by EOF/shutdown | by fd reuse | open at exit | spans in a connection trace |
+|---|---|---|---|---|---|---|---|
+| NET (4 runs) | 2.0 | 1,403 | 0 | 3 | **1,390** | 10 | 98.0% |
+| NETFD (4 runs) | 5.0 | 1,401 | 1,401 | 0 | 0 | 0 | 97.4% |
+| ALL (5 runs) | 10.7 | 1,750 | 1,750 | 0 | 0 | 0 | 51.6% (rest: event loop) |
+
+- **Unexpected**: with ab, NET almost never sees the connection end.
+  - ab speaks HTTP/1.0, so nginx closes right after `writev`, without a
+    second `recvfrom` that returns 0. NET records neither `close` nor
+    `writev`, so a NET connection ends only when the next `accept4` reuses
+    its fd (`vmitrace.incomplete = "fd reused by accept"`).
+  - The root's end time is still that of its last recorded span. In the
+    curl-based checks (10-3/10-4), NET connections did end by EOF, because
+    curl closes first.
+  - NETFD closes every connection via `close`.
+- Costs: NETFD records 2.5x as much as NET (5.0 vs 2.0 per request). The
+  throughput difference is within the noise of section 4.
+
+### Summary
+
+- Correctness and selectivity hold at the same bar as Phase 7/8, now with
+  return values and without unnamed syscalls.
+- In-guest cost is not measurable with the Phase 8 method here. A
+  longer-window run puts it at about 0.1 us per syscall, against ~101 us for
+  the trap-based legacy monitor.
+- The new bottleneck is the host-side reader. The collector loses records
+  under sustained load whenever the ring cannot hold the burst.
 
 ## Notes for later phases
 

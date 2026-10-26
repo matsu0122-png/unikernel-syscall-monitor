@@ -1,0 +1,31 @@
+condition,round,req_per_s,mean_latency_ms,failed_requests,valid,write_idx,emitted,lost,rejects,offset_resets,offset_uncertainty_ns,collector_cpu_s,accept4,accept4_failed,requests_seen,boot_records,entry_hits,note
+base,1,13557.48,0.369,0.0,True,,,,,,,,,,,,,
+all-i,1,14230.82,0.351,0.0,True,14033,,,,,,,,,,,,
+all-ii,1,14625.97,0.342,0.0,False,14508,7066,7442,0,0,266605,1.034,674,0,673,291,,"emitted 7066 != write_idx 14508; requests_seen=673, expected 1350"
+base,2,15694.42,0.319,0.0,True,,,,,,,,,,,,,
+all-i,2,14869.38,0.336,0.0,True,13898,,,,,,,,,,,,
+all-ii,2,14913.56,0.335,0.0,False,14477,8841,5636,0,0,366373,1.242,834,0,834,291,,"emitted 8841 != write_idx 14477; requests_seen=834, expected 1350"
+base,3,14859.52,0.336,0.0,True,,,,,,,,,,,,,
+all-i,3,14394.38,0.347,0.0,True,14627,,,,,,,,,,,,
+all-ii,3,13774.25,0.363,0.0,False,14780,6134,8646,0,0,132274,0.899,549,0,548,291,,"emitted 6134 != write_idx 14780; requests_seen=548, expected 1350"
+base,4,15350.28,0.326,0.0,True,,,,,,,,,,,,,
+all-i,4,14129.67,0.354,0.0,True,14524,,,,,,,,,,,,
+all-ii,4,15189.22,0.329,0.0,False,13925,6443,7482,0,0,1253385,0.958,622,0,624,291,,"emitted 6443 != write_idx 13925; requests_seen=624, expected 1350"
+base,5,14809.41,0.338,0.0,True,,,,,,,,,,,,,
+all-i,5,13928.77,0.359,0.0,True,14648,,,,,,,,,,,,
+all-ii,5,15305.64,0.327,0.0,False,13946,5821,8125,0,0,90478,0.903,553,0,555,291,,"emitted 5821 != write_idx 13946; requests_seen=555, expected 1350"
+base,6,14223.97,0.352,0.0,True,,,,,,,,,,,,,
+all-i,6,15310.69,0.327,0.0,True,13970,,,,,,,,,,,,
+all-ii,6,15916.16,0.314,0.0,False,13997,6201,7796,0,0,1272013,0.904,594,0,594,291,,"emitted 6201 != write_idx 13997; requests_seen=594, expected 1350"
+base,7,14744.08,0.339,0.0,True,,,,,,,,,,,,,
+all-i,7,13180.44,0.379,0.0,True,14770,,,,,,,,,,,,
+all-ii,7,15598.0,0.321,0.0,False,13952,7447,6505,0,0,291936,1.084,718,0,718,291,,"emitted 7447 != write_idx 13952; requests_seen=718, expected 1350"
+base,8,12811.29,0.39,0.0,True,,,,,,,,,,,,,
+all-i,8,14153.36,0.353,0.0,True,13964,,,,,,,,,,,,
+all-ii,8,15962.87,0.313,0.0,False,13983,6339,7644,0,0,187146,0.92,599,0,599,291,,"emitted 6339 != write_idx 13983; requests_seen=599, expected 1350"
+base,9,14726.21,0.34,0.0,True,,,,,,,,,,,,,
+all-i,9,14570.56,0.343,0.0,True,13886,,,,,,,,,,,,
+all-ii,9,15911.29,0.314,0.0,False,13922,6961,6961,0,0,623692,1.01,681,0,680,291,,"emitted 6961 != write_idx 13922; requests_seen=680, expected 1350"
+base,10,16237.21,0.308,0.0,True,,,,,,,,,,,,,
+all-i,10,14824.78,0.337,0.0,True,14478,,,,,,,,,,,,
+all-ii,10,15831.26,0.316,0.0,False,13916,6795,7121,0,0,909964,1.039,654,0,655,291,,"emitted 6795 != write_idx 13916; requests_seen=655, expected 1350"

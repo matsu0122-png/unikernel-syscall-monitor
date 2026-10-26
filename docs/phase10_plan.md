@@ -22,7 +22,7 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
 
 - Done (see README Phase 10-4 result).
 
-## 10-5 verification
+## 10-5 verification (done; README Phase 10-5 result)
 
 1. Correctness: ALL build vs `logs/strace_ground_truth.log`, offset-0, from
    the first syscall.

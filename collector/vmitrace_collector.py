@@ -160,8 +160,15 @@ def main():
     meta = None
     if args.instance:
         meta_path = Path(args.shm_dir) / f"{args.instance}.json"
-        wait_for(meta_path.exists, str(meta_path), args.wait_s)
-        meta = json.loads(meta_path.read_text())
+
+        def read_meta():
+            # the wrapper renames a complete file into place; still, never
+            # fail on a partial or unreadable one, just retry
+            try:
+                return json.loads(meta_path.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                return None
+        meta = wait_for(read_meta, str(meta_path), args.wait_s)
         mem_path = meta["mem_path"]
         want_size = meta["mem_size"]
     else:

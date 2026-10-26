@@ -4,3 +4,4 @@ logs/*.json
 logs/bench_p8_raw/
 logs/bench_breakdown_raw/
 collector/.venv/
+logs/bench_p10_raw/

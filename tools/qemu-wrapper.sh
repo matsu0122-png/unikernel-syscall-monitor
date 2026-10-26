@@ -117,7 +117,7 @@ if [ -e "$mem" ]; then
 	fi
 	rm -f "$mem"
 fi
-rm -f "$meta"
+rm -f "$meta" "$meta.tmp"
 
 # 5. fresh file and metadata, 0640, group $GROUP
 umask 027
@@ -129,6 +129,8 @@ if ! chgrp "$GROUP" "$mem" 2>/dev/null; then
 	exit 1
 fi
 json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+# written to a temporary name and renamed, so a reader never sees a
+# partial file (a collector started first polls for it)
 {
 	printf '{\n'
 	printf '  "name": %s,\n' "$(json_str "$name")"
@@ -140,9 +142,10 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 	printf '  "qemu": %s,\n' "$(json_str "$QEMU")"
 	printf '  "wrapper_pid": %d\n' $$
 	printf '}\n'
-} > "$meta"
-chmod 0640 "$meta"
-chgrp "$GROUP" "$meta"
+} > "$meta.tmp"
+chmod 0640 "$meta.tmp"
+chgrp "$GROUP" "$meta.tmp"
+mv -f "$meta.tmp" "$meta"
 
 # 6. detached cleanup process (decision 7, revised before 10-4)
 if [ -n "$pidfile" ]; then

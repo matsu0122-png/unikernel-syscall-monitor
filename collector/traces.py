@@ -80,7 +80,8 @@ class TraceBuilder:
         self.stats = {"connections": 0, "closed_by_close": 0,
                       "closed_by_eof_or_shutdown": 0, "closed_idle": 0,
                       "closed_fd_reused": 0, "closed_open_at_flush": 0,
-                      "loop_traces": 0, "spans": 0}
+                      "loop_traces": 0, "spans": 0, "spans_in_connection": 0,
+                      "spans_inferred": 0, "spans_in_loop": 0}
 
     # --- connection roots ---
 
@@ -183,6 +184,11 @@ class TraceBuilder:
                                    errno_mod.errorcode.get(err, str(err))))
         span.end(end_time=end_ns)
         self.stats["spans"] += 1
+        if conn is None:
+            self.stats["spans_in_loop"] += 1
+        else:
+            self.stats["spans_in_connection"] += 1
+            self.stats["spans_inferred"] += attribution == "inferred"
         self.last_end = max(self.last_end, end_ns)
 
         if conn is not None:
