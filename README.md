@@ -18,6 +18,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
 - **Phase 10-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase10_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
+- **Phase 10-1 (guest library `guest/lib-vmitrace`): done, smoke-tested.** See below and `docs/phase10_1_guest_library.md`. Records selected binary syscalls from syscall_shim's enter/exit hooks into a guest-RAM ring (no VM exit, overwrite when full), built from pinned local copies of Unikraft/lwip/libelf/elfloader with `tools/guest_build.py`. On the distro QEMU the ALL build's records start at `brk` and the per-request sequence and return values match Phase 8; the NET build records only the 16 NET syscalls.
 
 ## Phase 1 result
 
@@ -790,6 +791,68 @@ that adds `-object memory-backend-file,...,mem-path=/dev/shm/vmiprobe.mem,share=
 QEMU user. `../.unikraft/build/config` still has
 `CONFIG_LIBSYSCALL_SHIM_STRACE=y` from Phase 4 even though the binary is the
 non-strace backup.
+
+## Phase 10-1 result
+
+Goal: the guest half of the unmodified-QEMU design. A Unikraft library
+writes selected syscalls into a ring buffer in guest RAM, and Unikraft
+itself is not modified. Details: `docs/phase10_1_guest_library.md`.
+
+**What was done**:
+
+- `tools/guest_build.py vendor` copied Unikraft, lib-lwip, lib-libelf,
+  app-elfloader and the extracted lwip origin out of `../.unikraft` into
+  `/home/matsu/vmitrace-build/vendor`. The sha256 of all 2,213 files is in
+  `guest/vendor.sha256`.
+- `tools/guest_build.py build <base|net|file|time|all>` writes a Kraftfile
+  that points at those copies (and at `guest/lib-vmitrace` for non-base
+  variants) and runs `kraft build`.
+- `guest/lib-vmitrace` registers `vt_enter`/`vt_exit` with
+  `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio`.
+- Layout, as decided for 10-0 §7:
+  - Constant 64-byte header in a page-aligned PROGBITS `.vmitrace`.
+  - 512-bit bitmap in `.rodata`, computed at compile time from
+    `LIBVMITRACE_GROUP_{ALL,NET,FILE,TIME}`.
+  - Per-lcpu `write_idx`/`dropped` and the 96-byte records in a NOBITS
+    `.bss.vmitrace_ring`.
+  - Hook code in its own `.vmitrace_text`.
+  - `exit`/`exit_group` also get an entry-only record.
+
+**Confirmed**:
+
+- kraftkit 0.12.16 accepts local paths for every `source:`.
+- The `base` build has the same program headers and handler addresses as
+  `backup_verified_build/`. It is not byte-identical: embedded paths and the
+  version string shift `.rodata`.
+- LTO kept the three hook functions inside `.vmitrace_text`. The hooks read
+  the bitmap from memory and call only `ukplat_monotonic_clock` (`rdtsc`) and
+  `uk_sys_gettid` (one TLS load).
+- On `/usr/bin/qemu-system-x86_64` + `memory-backend-file,share=on`, the ALL
+  build:
+  - 288 records after boot and 341 after 3 curls, 0 bad seq.
+  - The first record is `brk`.
+  - The first request reads `accept4 = 7 ... recvfrom = 78, openat = 8,
+    pread64 = 612, writev = 850 ... close`, i.e. the Phase 8 values.
+  - A 2.5 s `epoll_wait` was paired correctly across the block.
+- NET build: the bitmap is exactly the 16 NET syscalls, and only those were
+  recorded (26 records).
+- Decision 7: after `unlink()` of the shared file, an existing ring-only
+  mmap keeps working and tmpfs space is freed when QEMU exits. **Not adopted
+  as default**: a reader that restarts could never reopen the file. Kept the
+  wrapper + pidfile cleanup (comparison in the doc, §4).
+
+**Unexpected, recorded**:
+
+- lib-lwip downloads the moving `UNIKRAFT-2_1_x` branch zip at build time. A
+  fresh download + patches yields a different `sockets.h` (`TCP_KEEP*`
+  values) than the verified tree. The build script seeds the copied tree
+  and its stamps instead.
+- The first ring placement (`INSERT AFTER .bss`) landed after `_end`. Moved
+  into `.bss` via the `.bss.` input-section prefix.
+
+**Unresolved**: the `vmitrace` group (needs root, comes with the collector in
+10-3); moving Phase 1-8 code to `legacy/` (planned with 10-2); RDTSC exiting
+unverified; SMP untested; overhead not measured yet (10-5).
 
 ## Notes for later phases
 

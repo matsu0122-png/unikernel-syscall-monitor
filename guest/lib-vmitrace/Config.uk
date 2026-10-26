@@ -1,0 +1,42 @@
+menuconfig LIBVMITRACE
+	bool "vmitrace: syscall ring buffer for host-side monitoring"
+	default n
+	depends on LIBSYSCALL_SHIM
+	depends on LIBSYSCALL_SHIM_HANDLER
+	help
+		Records selected binary syscalls into a ring buffer in guest
+		RAM (sections .vmitrace / .vmitrace_ring) for a host process
+		that maps guest memory read-only. No VM exits, never blocks:
+		when the ring is full the oldest record is overwritten.
+
+if LIBVMITRACE
+
+config LIBVMITRACE_RING_ORDER
+	int "Ring capacity per lcpu (log2 of record count)"
+	range 4 20
+	default 12
+	help
+		Each record is 96 bytes. 12 = 4096 records = 384 KiB per lcpu.
+
+comment "Syscall groups to record"
+
+config LIBVMITRACE_GROUP_ALL
+	bool "ALL: every syscall (overrides the groups below)"
+	default n
+
+config LIBVMITRACE_GROUP_NET
+	bool "NET: socket, bind, listen, accept(4), connect, send/recv*, ..."
+	default y
+	depends on !LIBVMITRACE_GROUP_ALL
+
+config LIBVMITRACE_GROUP_FILE
+	bool "FILE: open/read/write/stat/close and other path/fd syscalls"
+	default n
+	depends on !LIBVMITRACE_GROUP_ALL
+
+config LIBVMITRACE_GROUP_TIME
+	bool "TIME: gettimeofday, clock_*, nanosleep, timerfd_*"
+	default n
+	depends on !LIBVMITRACE_GROUP_ALL
+
+endif

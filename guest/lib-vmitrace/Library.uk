@@ -1,0 +1,3 @@
+name        := "vmitrace"
+description := "Syscall ring buffer in guest RAM for host-side (agentless) monitoring."
+license     := "BSD-3-Clause"
