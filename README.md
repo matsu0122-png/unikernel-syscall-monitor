@@ -19,6 +19,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
 - **Phase 10-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase10_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
 - **Phase 10-1 (guest library `guest/lib-vmitrace`): done, smoke-tested.** See below and `docs/phase10_1_guest_library.md`. Records selected binary syscalls from syscall_shim's enter/exit hooks into a guest-RAM ring (no VM exit, overwrite when full), built from pinned local copies of Unikraft/lwip/libelf/elfloader with `tools/guest_build.py`. On the distro QEMU the ALL build's records start at `brk` and the per-request sequence and return values match Phase 8; the NET build records only the 16 NET syscalls.
+- **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`.
 
 ## Phase 1 result
 
@@ -853,6 +854,106 @@ itself is not modified. Details: `docs/phase10_1_guest_library.md`.
 **Unresolved**: the `vmitrace` group (needs root, comes with the collector in
 10-3); moving Phase 1-8 code to `legacy/` (planned with 10-2); RDTSC exiting
 unverified; SMP untested; overhead not measured yet (10-5).
+
+## Phase 10 security model (read before relying on it)
+
+- **The header, the bitmap and the hook code are writable from inside the
+  guest.** Unikraft runs everything in ring 0 in one address space
+  (syscall_translation_notes §1/§7), so a compromised nginx or library can
+  rewrite `.vmitrace`, `vmitrace_bitmap`, `.vmitrace_text`, the
+  `uk_syscall_entertab/exittab` entries, or the page tables that map them.
+  Read-only ELF flags do not stop this. **Host-side tamper detection
+  (`integrity/`, Phase 10-6) is the only defense.** Ring contents are
+  therefore evidence of what the guest's tracer wrote, not ground truth.
+- The collector never takes addresses from the guest header. It checks
+  every header field against `manifest.json` (`abi`, `expected`) and
+  reads only the manifest's ring range.
+- **Anyone who can read the shared file can read all guest RAM** (TLS
+  keys, request bodies, ...), not just the ring. The file is `0640` and
+  group `vmitrace` (decision 4, created in 10-3). Every member of that group
+  must be treated as having full read access to the guest. The collector
+  mmaps only the ring range, but that limits the collector's own exposure,
+  not what group members could read.
+- QEMU is unmodified and can be the distro package (security updates
+  apply). Monitoring adds no code to the QEMU process, and the readers
+  run in separate host processes.
+- The guest's disk/memory footprint is bounded by the fixed ring size. The
+  guest cannot make the host write more: the host side decides what to
+  persist.
+
+## Phase 10-2 result
+
+Goal: the host-side description of a build that readers trust instead of
+the guest (`manifest.json`), and a wrapper that adds shared guest RAM to
+the distro QEMU. Also moved the Phase 1-9 code to `legacy/`.
+
+**What was done**:
+
+- `legacy/`: `qemu_patch/`, the gdb/RSP scripts, `run_capture_from_boot.py`,
+  `run_capture_inline.py`, `bench_overhead_inline.py`.
+  - `syscall_table.py` and `validate_strace.py` stay at the root.
+  - Scripts now use `REPO = HERE.parent` for `logs/` and `syscall_table.py`,
+    and `PROJECT_DIR = REPO.parent` for the Phase 1-9 image.
+  - README/docs references and usage strings now point at `legacy/`.
+  - Checked: all `--help`, imports, and the entry/return address resolution
+    (`0x101000`/`0x1010da`) still work.
+- `tools/gen_manifest.py <dbg>` writes `manifest.json` next to the image.
+  `guest_build.py build` now runs it for every vmitrace variant. Contents:
+  - `build_id` = sha256 of the booted image (Unikraft's linker script
+    discards `.note.gnu.build-id`).
+  - ABI constants.
+  - **`expected` state/records/bitmap addresses**, cross-checked against
+    the ELF symbols at generation time.
+  - Ring range (asserted NOBITS and before `_end`).
+  - Bitmap words, sha256, selected syscalls (names from the build's
+    `syscall_nrs.h`) and Kconfig groups.
+  - Both hook tables with their entries resolved to symbols.
+  - **8 hash regions**: `vmitrace_hdr`, `vmitrace_bitmap`,
+    `.vmitrace_text`, `uk_syscall_entertab`, `uk_syscall_exittab`,
+    `ukplat_syscall_handler`, `ukplat_monotonic_clock`, `uk_sys_gettid`.
+    The generator refuses a region in a writable or NOBITS section.
+  - **Excluded**: the 8 boot page tables `x86_bpt_*` (4 KiB each,
+    `plat/kvm/x86/pagetable64.S`). Generation fails if a hash region
+    overlaps them.
+  - `--check-mem <file>` compares the regions against a live guest.
+- `tools/qemu-wrapper.sh`, for `kraft run --qemu`:
+  - Probes (`-version`, `-accel help`) pass through untouched.
+  - For a launch it takes the size from `-m` and the name from
+    `$VMITRACE_NAME` or `-name`.
+  - Refuses if `/dev/shm/vmitrace-<name>.mem` is mapped by a live process;
+    otherwise removes the stale file.
+  - Creates the file fresh at `0640` (`chgrp vmitrace` if possible) and
+    writes `vmitrace-<name>.json` (mem path/size, pidfile, monitor socket,
+    kernel) for the collector.
+  - `exec`s `/usr/bin/qemu-system-x86_64` with
+    `-object memory-backend-file,...,share=on -machine memory-backend=...`.
+- `include/vmitrace/abi.h`: `dropped` is documented as always 0 in ABI v1.
+  Overwrite loss is derived on the host from `write_idx` and seq. The header
+  comment now says the regions are guest-writable.
+
+**Confirmed**:
+
+- ALL build booted through the wrapper. The process is
+  `/usr/bin/qemu-system-x86_64` with the two added options, 3 curls
+  returned 200, and the file and `.json` are `0640`.
+- `gen_manifest.py --check-mem` against that live guest: **all 8 regions
+  OK**, `write_idx=341`.
+- Wrapper edge cases (fake QEMU): refuses while the file is mapped (rc 1,
+  file untouched). `-m` values `size=64M`, `64M`, `64`, `1G` and
+  `size=128M,slots=2` parse, `abc` is rejected. A stale file is replaced by
+  an empty one. The name `../x` is rejected.
+- NET manifest: exactly the 16 NET syscalls, hook tables contain only
+  `vt_enter` / `vt_exit`.
+
+**Unresolved**:
+
+- The `vmitrace` group doesn't exist yet. The wrapper logs that and leaves
+  the file in the user's primary group. Creating it needs root (10-3).
+- Hashing `ukplat_syscall_handler` etc. ties the manifest to one exact
+  build. Any rebuild needs a new manifest (by design).
+- The page-table exclusion is by symbol. The one boot relocation found in
+  10-0 (`lcpu_start32`, 0x100069) is not in any hash region, so it is not
+  listed.
 
 ## Notes for later phases
 

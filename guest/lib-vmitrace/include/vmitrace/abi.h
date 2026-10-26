@@ -11,8 +11,11 @@
  * (Unikraft maps the image 1:1):
  *
  *   .vmitrace       PROGBITS  struct vmitrace_hdr, initialized in the image.
- *                             Never written at run time, so the host can
- *                             hash it against the manifest.
+ *                             vmitrace never writes it, so the host can
+ *                             hash it against the manifest. It is NOT
+ *                             protected: any guest code (all ring 0, one
+ *                             address space) can rewrite it, the bitmap and
+ *                             the hook code. Detection is the host's job.
  *   .bss.vmitrace_ring        struct vmitrace_lcpu_state[nr_lcpu], then
  *         (NOBITS, in .bss)   nr_lcpu rings of `capacity` records each.
  *                             Zero-filled by the loader before the first
@@ -28,6 +31,11 @@
  *   7. state->write_idx = idx + 1
  * x86 keeps stores in program order (TSO), so a reader that sees
  * seq == idx + 1 before and after copying the record has a complete copy.
+ *
+ * Loss: a full ring overwrites its oldest record and the guest does not know
+ * what the host has read, so the guest never counts overwrite loss. The host
+ * derives it: records [last_read, write_idx - capacity) were overwritten,
+ * and a slot whose seq is not idx + 1 when read was overwritten or torn.
  */
 
 #ifndef __VMITRACE_ABI_H__
@@ -62,7 +70,10 @@ struct vmitrace_hdr {
 /* One per lcpu, 64 bytes so lcpus never share a cache line. */
 struct vmitrace_lcpu_state {
 	__u64 write_idx;	/*  0 records ever written, monotonic */
-	__u64 dropped;		/*  8 events the guest could not record */
+	__u64 dropped;		/*  8 reserved for events the guest skips;
+				 *    version 1 never increments it (always 0).
+				 *    Overwrite loss is not counted here, see
+				 *    "Loss" above. */
 	__u64 reserved[6];	/* 16 */
 };				/* 64 */
 

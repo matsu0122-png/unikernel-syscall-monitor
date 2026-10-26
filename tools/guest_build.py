@@ -11,7 +11,7 @@ backup_verified_build/). Instead:
   build    create <root>/<variant>/ (Dockerfile, conf, wwwroot copied from
            ../, Kraftfile = ../Kraftfile with every source pointed at the
            vendor copy, plus lib-vmitrace for non-base variants) and run
-           `kraft build`.
+           `kraft build`, then tools/gen_manifest.py for non-base variants.
 
 Variants: base (no lib-vmitrace), net, file, time, all.
 
@@ -156,6 +156,9 @@ def cmd_build(args):
     if rc != 0 or not img.exists():
         sys.exit(f"build failed (rc={rc}), see {log}")
     print(img)
+    if GROUPS[args.variant] is not None:
+        subprocess.run([sys.executable, str(HERE / "gen_manifest.py"),
+                        str(img.with_suffix(".dbg"))], check=True)
 
 
 def main():
