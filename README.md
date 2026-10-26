@@ -19,7 +19,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
 - **Phase 10-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase10_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
 - **Phase 10-1 (guest library `guest/lib-vmitrace`): done, smoke-tested.** See below and `docs/phase10_1_guest_library.md`. Records selected binary syscalls from syscall_shim's enter/exit hooks into a guest-RAM ring (no VM exit, overwrite when full), built from pinned local copies of Unikraft/lwip/libelf/elfloader with `tools/guest_build.py`. On the distro QEMU the ALL build's records start at `brk` and the per-request sequence and return values match Phase 8; the NET build records only the 16 NET syscalls.
-- **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`.
+- **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`. Follow-ups before 10-3: `_ukplat_syscall` added as the 9th hash region (range found by disassembly), shared files moved to `/dev/shm/vmitrace/`, and security-model limits written down.
 
 ## Phase 1 result
 
@@ -880,6 +880,33 @@ unverified; SMP untested; overhead not measured yet (10-5).
 - The guest's disk/memory footprint is bounded by the fixed ring size. The
   guest cannot make the host write more: the host side decides what to
   persist.
+- Shared files live in a private directory, `/dev/shm/vmitrace/` (owner =
+  QEMU user, mode `0750`, group `vmitrace`), not directly in `/dev/shm`.
+  **`tools/qemu-wrapper.sh` creates the directory if it is missing** (0750,
+  then `chgrp vmitrace`; if that chgrp fails it removes the directory again
+  and refuses to start). It **refuses** an existing directory that is a
+  symlink, or whose owner, mode or group is anything else. Create-on-demand
+  was chosen because `/dev/shm` is emptied at every reboot. A
+  `systemd-tmpfiles` rule is the root-managed alternative.
+
+### Limits (what hash checking cannot see)
+
+- **Bypassing the hooks without touching hashed bytes is not detected by
+  memory hashing.** Examples: pointing `MSR_LSTAR` at a different entry
+  stub (MSRs are CPU state, not RAM), or code calling `uk_syscall_do_*` /
+  `uk_syscall_r_*` directly instead of executing `syscall`. Unikraft's own
+  native calls already take this path (with `execenv == NULL`, filtered
+  out by design). All hashed regions stay intact while syscalls stop
+  appearing in the ring. Only behavioural checks can catch this (planned
+  for 10-6, e.g. traffic without a moving `write_idx`, connection counts vs
+  recorded `accept4`).
+- **The wrapper's "file still in use" check reads `/proc/*/maps`, and only
+  processes of the same user are visible there.** A process of another
+  user that maps the file (e.g. a reader in group `vmitrace`) is not seen,
+  so the wrapper could delete a file that such a reader still has mapped.
+  The reader keeps its old mapping of a guest that is gone.
+- Hashing proves the bytes are equal at the moment of the check. A
+  modification that is reverted between two checks is missed.
 
 ## Phase 10-2 result
 
@@ -924,7 +951,9 @@ the distro QEMU. Also moved the Phase 1-9 code to `legacy/`.
     otherwise removes the stale file.
   - Creates the file fresh at `0640` (`chgrp vmitrace` if possible) and
     writes `vmitrace-<name>.json` (mem path/size, pidfile, monitor socket,
-    kernel) for the collector.
+    kernel) for the collector. (Superseded before 10-3: files are now
+    `/dev/shm/vmitrace/<name>.{mem,json}` and a failed chgrp is fatal. See
+    the security model.)
   - `exec`s `/usr/bin/qemu-system-x86_64` with
     `-object memory-backend-file,...,share=on -machine memory-backend=...`.
 - `include/vmitrace/abi.h`: `dropped` is documented as always 0 in ABI v1.

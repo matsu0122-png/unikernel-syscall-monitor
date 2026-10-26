@@ -14,7 +14,7 @@ running guest:
   bitmap          address, sha256, selected syscalls, Kconfig groups
   hash_regions    byte ranges that must be identical in guest RAM: header,
                   bitmap, .vmitrace_text, both hook tables, and the functions
-                  the hooks run through (ukplat_syscall_handler,
+                  the hooks run through (_ukplat_syscall, ukplat_syscall_handler,
                   ukplat_monotonic_clock, uk_sys_gettid)
   excluded        boot page tables inside .text (x86_bpt_*, rewritten at
                   boot); no hash region may overlap them
@@ -33,6 +33,7 @@ import mmap
 import os
 import re
 import struct
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,6 +111,25 @@ class Elf:
 
 def sha256(b):
     return hashlib.sha256(b).hexdigest()
+
+
+def first_jmp_rcx_end(dbg_path, start, window=0x1000):
+    """End address of the first `jmp *%rcx` at or after `start`."""
+    out = subprocess.run(
+        ["objdump", "-d", "--no-show-raw-insn", f"--start-address={start:#x}",
+         f"--stop-address={start + window:#x}", str(dbg_path)],
+        check=True, capture_output=True, text=True).stdout
+    insns = []
+    for line in out.splitlines():
+        m = re.match(r"\s*([0-9a-f]+):\s+(.*)$", line)
+        if m:
+            insns.append((int(m.group(1), 16), m.group(2).strip()))
+    for i, (addr, text) in enumerate(insns):
+        if re.fullmatch(r"jmp\s+\*%rcx", text):
+            if i + 1 >= len(insns):
+                sys.exit("cannot size the jmp *%rcx instruction")
+            return insns[i + 1][0]
+    sys.exit(f"no `jmp *%rcx` within {window:#x} bytes of {start:#x}")
 
 
 def read_syscall_nrs(path):
@@ -227,6 +247,15 @@ def build_manifest(dbg_path):
         if not size:
             sys.exit(f"{fn} has no symbol size")
         add(fn, addr, size, "function")
+
+    # _ukplat_syscall (plat/common/x86/syscall.S) is the LSTAR target and
+    # calls ukplat_syscall_handler. It is an assembly label with no size,
+    # so the range is from the label to the end of its first `jmp *%rcx`
+    # (the return to the application), found by disassembly.
+    lstar = elf.sym("_ukplat_syscall")[0]
+    lstar_end = first_jmp_rcx_end(dbg_path, lstar)
+    add("_ukplat_syscall", lstar, lstar_end - lstar, "entry_asm")
+    regions[-1]["range_rule"] = "start of _ukplat_syscall .. end of first `jmp *%rcx` (objdump)"
 
     # --- exclusions: boot page tables in .text, 4 KiB each ---
     excluded = sorted(

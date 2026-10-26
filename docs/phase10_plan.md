@@ -47,3 +47,11 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
   events.
 - Test: overwrite the bitmap in guest memory (HMP, test only) and confirm
   detection. Also test the hook tables (`uk_syscall_entertab/exittab`).
+- **(added before 10-3) Consistency checks** (catch bypasses that leave
+  every hashed byte intact, see README "Limits"):
+  - traffic is flowing (host-side connection/packet counters, e.g. QEMU
+    slirp hostfwd connections or `ss` on the forwarded port) but
+    `write_idx` does not advance -> alert;
+  - number of connections seen on the host vs number of recorded
+    `accept4` returning >= 0 over the same window -> alert on mismatch
+    beyond what overwrite loss explains.

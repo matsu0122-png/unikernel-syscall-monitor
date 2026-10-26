@@ -10,13 +10,19 @@
 #
 #   1. Size = kraftkit's `-m` value ("size=64M", "64M", "64" = MiB).
 #   2. Name = $VMITRACE_NAME, else kraftkit's `-name` (its machine id).
-#   3. Refuse if $VMITRACE_SHM_DIR/vmitrace-<name>.mem is mapped by a running
-#      process; otherwise remove the stale file (Phase 10-0 §4: it outlives
-#      the VM and holds the previous guest's RAM).
-#   4. Create it empty, mode 0640, group $VMITRACE_GROUP if that group
-#      exists and we may chgrp to it. QEMU opens the existing file and sizes
-#      it, keeping owner, group and mode.
-#   5. Write vmitrace-<name>.json next to it (mem path, size, pidfile,
+#   3. Directory $VMITRACE_SHM_DIR (default /dev/shm/vmitrace):
+#      - missing: create it 0750, chgrp $VMITRACE_GROUP; if the chgrp fails
+#        (group missing, or we are not a member) remove it again and refuse.
+#        /dev/shm is emptied at reboot, hence create-on-demand.
+#      - present: must be a real directory (not a symlink) owned by us, mode
+#        exactly 0750, group $VMITRACE_GROUP; otherwise refuse.
+#   4. Refuse if <dir>/<name>.mem is mapped by a running process (only our
+#      own processes are visible in /proc/*/maps, see README); otherwise
+#      remove the stale file (Phase 10-0 §4: it outlives the VM and holds
+#      the previous guest's RAM).
+#   5. Create <name>.mem empty, 0640, group $VMITRACE_GROUP (refuse if the
+#      chgrp fails). QEMU opens the existing file and sizes it, keeping
+#      owner, group and mode. Write <name>.json (mem path, size, pidfile,
 #      monitor socket, kernel) for the collector, same mode and group.
 #   6. exec QEMU with
 #        -object memory-backend-file,id=vmitrace-mem,size=S,mem-path=F,share=on
@@ -24,8 +30,9 @@
 #
 # Environment:
 #   VMITRACE_QEMU     default /usr/bin/qemu-system-x86_64
-#   VMITRACE_SHM_DIR  default /dev/shm
-#   VMITRACE_GROUP    default vmitrace
+#   VMITRACE_SHM_DIR  default /dev/shm/vmitrace
+#   VMITRACE_GROUP    default vmitrace (testing before the group exists:
+#                     VMITRACE_GROUP=$(id -gn))
 #   VMITRACE_NAME     default: kraftkit's -name
 #
 # Security note: every member of VMITRACE_GROUP can read the *whole* guest
@@ -34,7 +41,7 @@
 set -eu
 
 QEMU=${VMITRACE_QEMU:-/usr/bin/qemu-system-x86_64}
-SHM_DIR=${VMITRACE_SHM_DIR:-/dev/shm}
+SHM_DIR=${VMITRACE_SHM_DIR:-/dev/shm/vmitrace}
 GROUP=${VMITRACE_GROUP:-vmitrace}
 
 log() { echo "qemu-wrapper: $*" >&2; }
@@ -74,10 +81,30 @@ name=${VMITRACE_NAME:-$name_arg}
 case $name in
 ''|*/*|.*) log "unusable instance name '$name'"; exit 1 ;;
 esac
-mem=$SHM_DIR/vmitrace-$name.mem
-meta=$SHM_DIR/vmitrace-$name.json
+mem=$SHM_DIR/$name.mem
+meta=$SHM_DIR/$name.json
 
-# 3. stale file, but never one a live process still maps
+# 3. private directory
+if [ ! -e "$SHM_DIR" ] && [ ! -L "$SHM_DIR" ]; then
+	mkdir -m 0750 "$SHM_DIR"
+	if ! chgrp "$GROUP" "$SHM_DIR" 2>/dev/null; then
+		rmdir "$SHM_DIR"
+		log "cannot give $SHM_DIR group '$GROUP' (missing group, or $(id -un) not a member); refusing"
+		exit 1
+	fi
+	chmod 0750 "$SHM_DIR"
+fi
+if [ -L "$SHM_DIR" ] || [ ! -d "$SHM_DIR" ]; then
+	log "$SHM_DIR is not a directory; refusing"
+	exit 1
+fi
+st=$(stat -c '%u %a %G' "$SHM_DIR")
+if [ "$st" != "$(id -u) 750 $GROUP" ]; then
+	log "$SHM_DIR is '$st' (uid mode group), want '$(id -u) 750 $GROUP'; refusing"
+	exit 1
+fi
+
+# 4. stale file, but never one a live process still maps
 if [ -e "$mem" ]; then
 	if grep -lqsF " $mem" /proc/[0-9]*/maps 2>/dev/null; then
 		log "$mem is mapped by a running process; not touching it"
@@ -87,18 +114,15 @@ if [ -e "$mem" ]; then
 fi
 rm -f "$meta"
 
-# 4. fresh file, 0640, group if possible
+# 5. fresh file and metadata, 0640, group $GROUP
 umask 027
 : > "$mem"
 chmod 0640 "$mem"
-if getent group "$GROUP" >/dev/null 2>&1; then
-	chgrp "$GROUP" "$mem" 2>/dev/null ||
-		log "cannot chgrp $mem to $GROUP (is $(id -un) a member?)"
-else
-	log "group $GROUP does not exist; $mem stays group $(id -gn)"
+if ! chgrp "$GROUP" "$mem" 2>/dev/null; then
+	rm -f "$mem"
+	log "cannot chgrp $mem to $GROUP; refusing"
+	exit 1
 fi
-
-# 5. metadata for the collector
 json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 {
 	printf '{\n'
@@ -113,7 +137,7 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 	printf '}\n'
 } > "$meta"
 chmod 0640 "$meta"
-chgrp "$GROUP" "$meta" 2>/dev/null || true
+chgrp "$GROUP" "$meta"
 
 # 6. exec (no extra process). kraftkit passes -daemonize, so QEMU forks and
 # the running VM's pid is the one in -pidfile, not wrapper_pid above.
