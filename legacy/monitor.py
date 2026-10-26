@@ -45,11 +45,13 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# syscall_table.py stays at the repo root (this file is in legacy/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from syscall_table import SYSCALL_TABLE  # noqa: E402
 
 LOG_PATH = os.environ.get(
     "VMI_LOG_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "capture.jsonl"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "capture.jsonl"),
 )
 
 

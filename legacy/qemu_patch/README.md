@@ -5,7 +5,7 @@ package -- the exact source this was developed and tested against was
 fetched via `apt-get source qemu-system-x86`) to capture `_ukplat_syscall`
 hits entirely inside the QEMU/KVM process, replacing the external
 gdb/RSP mechanism in `../monitor.py` + `../attach_gdbstub.py`. Full
-design rationale: `../docs/phase6_inline_qemu_design.md`.
+design rationale: `../../docs/phase6_inline_qemu_design.md`.
 
 ## What's here
 
@@ -13,7 +13,7 @@ design rationale: `../docs/phase6_inline_qemu_design.md`.
   monitor implementation (state machine, breakpoint arm/verify/re-verify,
   KVM_EXIT_DEBUG handling, JSONL logging).
 - `target/i386/kvm/vmi-syscall-table.h` -- generated from
-  `../syscall_table.py` (same source of truth as the gdb-based tool).
+  `../../syscall_table.py` (same source of truth as the gdb-based tool).
 - `0001-kvm.c.diff` -- the only change to existing QEMU code: one new
   branch inside `kvm_handle_debug()`, an include, and a
   `vmi_monitor_init()` call at the top of `kvm_arch_init()`. 40
@@ -26,7 +26,7 @@ design rationale: `../docs/phase6_inline_qemu_design.md`.
   completes (selector `FW_CFG_KERNEL_DATA`), and still before returning
   control to the guest, call `vmi_monitor_kernel_loaded()`. This arms
   the breakpoint at the one point in boot proven (see
-  `../docs/phase7_boot_sync_investigation.md`) to never be overwritten
+  `../../docs/phase7_boot_sync_investigation.md`) to never be overwritten
   again -- replacing the probabilistic 200ms poll/retry as the primary
   arming path (kept as an automatic fallback; see that doc's results
   section for 10/10 reproducibility data).
@@ -105,7 +105,7 @@ Or via `../run_capture_inline.py`, which resolves the address with `nm`
 itself and wires these up automatically:
 
 ```
-python3 run_capture_inline.py --name vmiinline --duration 15 \
+python3 legacy/run_capture_inline.py --name vmiinline --duration 15 \
     --log logs/capture_inline.jsonl \
     --qemu /path/to/build/qemu-system-x86_64
 ```
@@ -151,5 +151,5 @@ or gives up):
 
 10/10 fresh boots in this environment armed via boot-sync (not the
 fallback), each capturing an identical 289-event, `brk`-first sequence
-before any HTTP traffic -- see `../docs/phase7_boot_sync_investigation.md`
+before any HTTP traffic -- see `../../docs/phase7_boot_sync_investigation.md`
 for the full reproducibility and ground-truth-comparison results.

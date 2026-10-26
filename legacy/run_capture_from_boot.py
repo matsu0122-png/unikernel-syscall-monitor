@@ -70,7 +70,7 @@ this is how that phase's ground-truth log, and the boot trace the user
 supplied in this project's own history, were produced).
 
 Usage:
-    python3 run_capture_from_boot.py --name vmiboot --duration 15 --log logs/capture_from_boot.jsonl
+    python3 legacy/run_capture_from_boot.py --name vmiboot --duration 15 --log logs/capture_from_boot.jsonl
 
 Must be run inside `sg docker -c "sg kvm -c '...'"` (or with those groups
 already active) since it shells out to `kraft`.
@@ -84,7 +84,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROJECT_DIR = HERE.parent
+REPO = HERE.parent          # vmi_syscall_monitor/ (this file is in legacy/)
+PROJECT_DIR = REPO.parent
 
 sys.path.insert(0, str(HERE))
 from attach_gdbstub import (  # noqa: E402
@@ -135,7 +136,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", default="vmibootcapture", help="kraft instance name")
     parser.add_argument("--duration", type=float, default=15.0, help="capture duration in seconds, timed from attach")
-    parser.add_argument("--log", default=str(HERE / "logs" / "capture_from_boot.jsonl"))
+    parser.add_argument("--log", default=str(REPO / "logs" / "capture_from_boot.jsonl"))
     parser.add_argument("--include", default="", help="comma-separated syscall numbers to include (default: all)")
     parser.add_argument("--exclude", default="", help="comma-separated syscall numbers to exclude")
     parser.add_argument("--max-events", type=int, default=None)

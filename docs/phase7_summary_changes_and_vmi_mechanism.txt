@@ -40,12 +40,12 @@ nginxがsyscallを呼ぶと、CPUは必ず`_ukplat_syscall`という決まった
 
 ## 2.2 Phase 6より前(Phase 1〜4): GDBを使った実現方法
 
-  Guest → int3 → KVM → QEMU gdbstub → RSP → GDB → monitor.py(Python)
+  Guest → int3 → KVM → QEMU gdbstub → RSP → GDB → legacy/monitor.py(Python)
 
 ホスト側で0xCCを設置する処理・レジスタ読み取り処理そのものは、外部の
 `gdb`というデバッガに丸投げしていました。QEMUに内蔵の「gdbstub」機能
 が、TCPソケット越しにgdbと通信(RSPというテキストプロトコル)し、gdbが
-Pythonスクリプト(monitor.py)を実行してログを書いていました。
+Pythonスクリプト(legacy/monitor.py)を実行してログを書いていました。
 
 この方式は正確でしたが、1回のsyscallヒットにつき「QEMU→別プロセスの
 gdbへネットワーク通信→Pythonで処理→また戻す」という重い経路を通るため、
@@ -161,11 +161,11 @@ Phase 7では、「なぜ最初に設置した0xCCが後から消えることが
 4. 変更したファイル一覧(Phase 6 + Phase 7)
 ==============================================
 
-すべて `vmi_syscall_monitor/qemu_patch/` 以下にまとめてあります
+すべて `vmi_syscall_monitor/legacy/qemu_patch/` 以下にまとめてあります
 (ビルド先は `/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/`)。
 ゲスト側(Unikraft/nginx)は一切変更していません。
 
-  qemu_patch/
+  legacy/qemu_patch/
   ├── README.md                                (ビルド・実行手順)
   ├── 0001-kvm.c.diff                           (Phase 6, 既存ファイルへの変更)
   ├── 0002-meson.build.diff                     (Phase 6, ビルド登録)
@@ -215,10 +215,10 @@ Phase 7では、「なぜ最初に設置した0xCCが後から消えることが
   syscall番号→名前→引数個数のC言語版テーブル。
 
 ### プロジェクト側スクリプト(vmi_syscall_monitor/直下、ゲストとは無関係)
-  - `run_capture_inline.py` : VM起動・監視・停止のオーケストレータ。
+  - `legacy/run_capture_inline.py` : VM起動・監視・停止のオーケストレータ。
     Ctrl-Cまで待機するinteractiveモード、リアルタイム端末表示、
     `--quiet`/`--show-after-ready`オプションなどをPhase 6後に追加
-  - `bench_overhead_inline.py` : baseline / inline監視 / GDB監視の3条件比較
+  - `legacy/bench_overhead_inline.py` : baseline / inline監視 / GDB監視の3条件比較
 
 これらのPythonスクリプトはQEMU自体を操作するだけで、ゲストには一切
 触れていません。
@@ -272,4 +272,4 @@ Phase 7では、「なぜ最初に設置した0xCCが後から消えることが
   - docs/phase6_inline_qemu_design.md       : Phase 6の設計調査(kvm_handle_debug等)
   - docs/phase6_beginner_explanation.txt    : Phase 6の初心者向け詳細解説
   - docs/phase7_boot_sync_investigation.md  : Phase 7の調査・実装・検証の全記録
-  - qemu_patch/README.md                    : パッチ適用・ビルド・実行手順
+  - legacy/qemu_patch/README.md                    : パッチ適用・ビルド・実行手順

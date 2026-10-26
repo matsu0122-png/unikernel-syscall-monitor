@@ -3,7 +3,7 @@
 `kraft run -d` instance via its monitor socket.
 
 Usage:
-    python3 attach_gdbstub.py <instance-name> [--port PORT]
+    python3 legacy/attach_gdbstub.py <instance-name> [--port PORT]
 
 Prints the chosen TCP port on success so callers can pipe it into
 `gdb -ex "target remote localhost:<port>"`.

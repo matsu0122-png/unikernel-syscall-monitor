@@ -21,19 +21,19 @@ each instance is given a fixed settle time after boot before any ab run
 starts (boot time itself is never included in the measured window).
 
 Usage:
-    python3 bench_overhead_inline.py --reps 3 --requests 200 --concurrency 5 \
+    python3 legacy/bench_overhead_inline.py --reps 3 --requests 200 --concurrency 5 \
         --qemu /home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64
 
     # Phase 8: also arm the return hook (VMI_MONITOR_RET_ADDR) in B
-    python3 bench_overhead_inline.py --ret ...
+    python3 legacy/bench_overhead_inline.py --ret ...
 
     # A/B only, alternating A,B,A,B,... with a fresh instance per trial
     # (one ab run per instance, after a warmup), raw rows to CSV
-    python3 bench_overhead_inline.py --ret --alternate 5 --requests 300 \
+    python3 legacy/bench_overhead_inline.py --ret --alternate 5 --requests 300 \
         --concurrency 5 --csv logs/bench_p8_ab.csv
 
     # Phase 9: overhead breakdown, rounds of C0->C1->C2->C3->C4
-    python3 bench_overhead_inline.py --breakdown 5 --requests 300 \
+    python3 legacy/bench_overhead_inline.py --breakdown 5 --requests 300 \
         --concurrency 5 --csv logs/bench_breakdown.csv
 
 --alternate exists because this unikernel falls over after roughly 1,500
@@ -57,7 +57,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROJECT_DIR = HERE.parent
+REPO = HERE.parent          # vmi_syscall_monitor/ (this file is in legacy/)
+PROJECT_DIR = REPO.parent
 sys.path.insert(0, str(HERE))
 
 from attach_gdbstub import find_instance_runtime_dir, find_free_port, attach_gdbserver  # noqa: E402
@@ -119,7 +120,7 @@ def run_condition_custom_qemu(label: str, name: str, qemu_path: str, addr: int,
                                monitor_enabled: bool, args, ret_addr=None) -> list:
     env_extra = {}
     if monitor_enabled:
-        env_extra = monitor_env(addr, ret_addr, HERE / "logs" / f"bench_inline_{name}.jsonl")
+        env_extra = monitor_env(addr, ret_addr, REPO / "logs" / f"bench_inline_{name}.jsonl")
     print(f"[bench3] starting {label} instance {name!r} (custom qemu, "
           f"monitor={'ON' if monitor_enabled else 'off'})")
     kraft_run(name, qemu_path, env_extra)
@@ -141,7 +142,7 @@ def run_condition_gdb(args) -> list:
         port = find_free_port()
         attach_gdbserver(runtime_dir / "mon.sock", port)
         env = dict(os.environ)
-        env["VMI_LOG_PATH"] = str(HERE / "logs" / "bench_inline_gdb.jsonl")
+        env["VMI_LOG_PATH"] = str(REPO / "logs" / "bench_inline_gdb.jsonl")
         gdb_proc = launch_gdb_capture(port, env)
         time.sleep(1.0)  # let the breakpoint arm before benchmarking
         try:
@@ -238,7 +239,7 @@ def check_breakdown(cond: str, log_path: Path, addr: int, ret_addr: int, expect_
 
 
 def run_breakdown(args, addr: int, ret_addr: int) -> int:
-    raw_dir = HERE / "logs" / "bench_breakdown_raw"
+    raw_dir = REPO / "logs" / "bench_breakdown_raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for rnd in range(1, args.breakdown + 1):
@@ -303,7 +304,7 @@ def run_breakdown(args, addr: int, ret_addr: int) -> int:
 
 
 def run_alternating(args, addr: int, ret_addr) -> int:
-    raw_dir = HERE / "logs" / "bench_p8_raw"
+    raw_dir = REPO / "logs" / "bench_p8_raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for trial in range(1, args.alternate + 1):
@@ -379,7 +380,7 @@ def main() -> int:
     parser.add_argument("--requests", type=int, default=200)
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--qemu", default=DEFAULT_QEMU)
-    parser.add_argument("--out", default=str(HERE / "logs" / "bench_overhead_inline_result.json"))
+    parser.add_argument("--out", default=str(REPO / "logs" / "bench_overhead_inline_result.json"))
     parser.add_argument("--ret", action="store_true",
                          help="also set VMI_MONITOR_RET_ADDR (Phase 8 return-value capture) in the "
                               "monitored condition; address resolved via objdump like "
@@ -392,7 +393,7 @@ def main() -> int:
                          help="Phase 9: N rounds of C0 (off), C1 (traps only), C2 (+registers), "
                               "C3 (+JSONL), C4 (+per-hit debug log = Phase 8 default); fresh "
                               "instance + warmup + one ab run per trial; implies --ret")
-    parser.add_argument("--csv", default=str(HERE / "logs" / "bench_overhead_inline_alternate.csv"),
+    parser.add_argument("--csv", default=str(REPO / "logs" / "bench_overhead_inline_alternate.csv"),
                          help="raw per-trial output for --alternate")
     args = parser.parse_args()
 

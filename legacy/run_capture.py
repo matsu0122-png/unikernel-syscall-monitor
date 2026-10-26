@@ -2,8 +2,8 @@
 """Orchestrator for Phase 2: start/attach -> capture for a duration -> JSONL.
 
 Usage:
-    python3 run_capture.py --name vmitest --duration 30 --log logs/capture.jsonl
-    python3 run_capture.py --name vmitest --duration 30 --include 0,1,232  # read,write,epoll_wait
+    python3 legacy/run_capture.py --name vmitest --duration 30 --log logs/capture.jsonl
+    python3 legacy/run_capture.py --name vmitest --duration 30 --include 0,1,232  # read,write,epoll_wait
 
 If --name isn't already running (per `kraft ps`), starts it with
 `kraft run -d -p 8080:80 --name <name> .` from PROJECT_DIR and stops+removes
@@ -23,7 +23,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROJECT_DIR = HERE.parent
+REPO = HERE.parent          # vmi_syscall_monitor/ (this file is in legacy/)
+PROJECT_DIR = REPO.parent
 
 sys.path.insert(0, str(HERE))
 from attach_gdbstub import (  # noqa: E402
@@ -62,7 +63,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", default="vmicapture", help="kraft instance name")
     parser.add_argument("--duration", type=float, default=30.0, help="capture duration in seconds")
-    parser.add_argument("--log", default=str(HERE / "logs" / "capture.jsonl"))
+    parser.add_argument("--log", default=str(REPO / "logs" / "capture.jsonl"))
     parser.add_argument("--include", default="", help="comma-separated syscall numbers to include (default: all)")
     parser.add_argument("--exclude", default="", help="comma-separated syscall numbers to exclude")
     parser.add_argument("--max-events", type=int, default=None)

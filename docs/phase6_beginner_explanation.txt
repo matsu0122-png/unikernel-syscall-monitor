@@ -192,7 +192,7 @@ KVM)には一切知らされないのです。
 Phase 1〜4では、この「int3を仕掛けて、ヒットしたらホストに知らせる」
 という部分を、外部の`gdb`というデバッガに丸ごとやらせていました。
 
-  Guest → int3 → KVM → QEMU gdbstub → RSP → GDB → monitor.py
+  Guest → int3 → KVM → QEMU gdbstub → RSP → GDB → legacy/monitor.py
 
 一つずつ説明します。
 
@@ -231,7 +231,7 @@ Phase 1〜4では、この「int3を仕掛けて、ヒットしたらホスト�
   int3がヒットしてVM-Exitが起きると、QEMUのgdbstubはgdbに「止まった
   よ」と通知します(RSPの`T05...`パケット)。gdbはそれを受けて、
   「g」というRSPコマンドを送り、レジスタの値を全部取得します。その値
-  は最終的にPythonの`monitor.py`(gdbに組み込まれたPythonインタプリタ
+  は最終的にPythonの`legacy/monitor.py`(gdbに組み込まれたPythonインタプリタ
   上で動く、このプロジェクト独自のスクリプト)が受け取り、JSONLに書
   き出していました。
 
@@ -277,7 +277,7 @@ syscallヒットで実際に何が起きていたか、省略せずに追って�
    ↓
   RSPでもう一往復(レジスタの値がQEMU→gdbへ返ってくる)
    ↓
-  Python (gdbに組み込まれたPythonインタプリタが、monitor.pyのコード
+  Python (gdbに組み込まれたPythonインタプリタが、legacy/monitor.pyのコード
           を実行し、JSONLへ書き込む)
    ↓
   さらに「z0(削除)→s(実行)→Z0(再設置)→c(継続)」の

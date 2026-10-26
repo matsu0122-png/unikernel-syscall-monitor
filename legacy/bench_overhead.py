@@ -3,7 +3,7 @@
 gdbstub) vs monitored (VMI breakpoint active on every syscall).
 
 Usage:
-    python3 bench_overhead.py --reps 5 --requests 2000 --concurrency 10
+    python3 legacy/bench_overhead.py --reps 5 --requests 2000 --concurrency 10
 
 Runs `ab -n <requests> -c <concurrency> http://localhost:8080/` <reps>
 times under each condition against the SAME running instance (attaching/
@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+REPO = HERE.parent          # vmi_syscall_monitor/ (this file is in legacy/)
 sys.path.insert(0, str(HERE))
 from attach_gdbstub import find_instance_runtime_dir, find_free_port, attach_gdbserver  # noqa: E402
 from gdb_session import launch_gdb_capture, stop_gdb_capture  # noqa: E402
@@ -104,7 +105,7 @@ def main() -> int:
     # this unikernel's load limits, that's a separate investigation.
     parser.add_argument("--requests", type=int, default=500)
     parser.add_argument("--concurrency", type=int, default=5)
-    parser.add_argument("--out", default=str(HERE / "logs" / "bench_overhead_result.json"))
+    parser.add_argument("--out", default=str(REPO / "logs" / "bench_overhead_result.json"))
     args = parser.parse_args()
 
     we_started_it = not instance_is_running(args.name)
@@ -126,7 +127,7 @@ def main() -> int:
     port = find_free_port()
     attach_gdbserver(runtime_dir / "mon.sock", port)
     env = dict(os.environ)
-    env["VMI_LOG_PATH"] = str(HERE / "logs" / "bench_monitor_capture.jsonl")
+    env["VMI_LOG_PATH"] = str(REPO / "logs" / "bench_monitor_capture.jsonl")
     gdb_proc = launch_gdb_capture(port, env)
     time.sleep(1.0)  # let the breakpoint arm before benchmarking
 

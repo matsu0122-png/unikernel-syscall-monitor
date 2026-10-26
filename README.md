@@ -12,8 +12,8 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 2 (automated JSONL capture loop): done.** See below.
 - **Phase 3 (overhead benchmark): done.** See below.
 - **Phase 4 (ground-truth cross-check vs in-guest strace): done.** See below.
-- **Phase 5 (capture from boot, not just after-the-fact attach): investigated, blocked.** See below. `run_capture.py` still only captures from whenever it attaches (a few seconds into an already-running guest); `run_capture_from_boot.py` documents why racing kraftkit's own boot sequence doesn't currently work.
-- **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
+- **Phase 5 (capture from boot, not just after-the-fact attach): investigated, blocked.** See below. `legacy/run_capture.py` still only captures from whenever it attaches (a few seconds into an already-running guest); `legacy/run_capture_from_boot.py` documents why racing kraftkit's own boot sequence doesn't currently work.
+- **Phase 6 (move capture inside QEMU, remove gdb/RSP): done.** See below. A patched QEMU (`legacy/qemu_patch/`) captures syscalls via a `KVM_EXIT_DEBUG` branch inside `kvm_handle_debug()` itself -- no external gdb process, no RSP protocol, no VM-wide debug-stop. ~90% throughput drop vs baseline (down from ~99% with the gdb/RSP mechanism) and, as a side effect, reliably captures from very early boot (Phase 5's original goal), because arming no longer depends on racing an external process against kraftkit's own resume.
 - **Phase 7 (deterministic capture from the very first syscall): done.** See below. Roots-caused *why* Phase 6's boot-time capture was probabilistic (a one-shot QEMU-internal memory write, not an external race) and hooked that exact event (`fw_cfg_dma_transfer()` in `hw/nvram/fw_cfg.c`) instead of polling for it. 10/10 fresh boots captured an identical, deterministic 289-event sequence starting with the guest's actual first syscall, confirmed via an offset-0 exact match against Unikraft's own in-guest strace ground truth (134/134 comparable events identical). No measurable overhead change vs Phase 6.
 - **Phase 8 (syscall return values): done.** See below. A second inline breakpoint at the `jmp *%rcx` that ends `_ukplat_syscall` reads `rax` on the way out, so each JSONL line now carries `ret` (plus `err`, e.g. `ENOENT`, for -errno results) and `dur_us`, in the same strace-style "after it returns" form as Unikraft's in-guest tracer. Throughput with entry + return capture is 6.4% of the unmonitored baseline (929 vs 14,501 req/s, mean of 5 alternating fresh-instance trials each); `--no-ret` restores Phase 6/7 entry-only behavior.
 - **Phase 9 (overhead breakdown): done.** See below. Switches in the patched QEMU (`VMI_MONITOR_NO_REGS`/`NO_LOG`/`NO_DEBUGLOG`) remove one stage at a time. Of the ~104 us the monitor adds per syscall, ~90 us (~87%) is the trap mechanism alone (2 int3 + 2 single-step exits, remove/reinsert); register sync ~2 us, JSONL ~6.5 us, per-hit debug log ~5.4 us.
@@ -31,8 +31,8 @@ Steps that worked end to end:
 
 ```
 kraft run -d -p 8080:80 --name vmitest .
-python3 attach_gdbstub.py vmitest        # -> prints PORT=1234
-gdb -q -nx -x phase1_manual_test.gdb     # attaches, sets breakpoint, waits
+python3 legacy/attach_gdbstub.py vmitest        # -> prints PORT=1234
+gdb -q -nx -x legacy/phase1_manual_test.gdb     # attaches, sets breakpoint, waits
 curl localhost:8080/                      # triggers a real syscall hit
 ```
 
@@ -55,12 +55,12 @@ Capture is correct.
 `syscall_table.py` (185/185 syscalls in `provided_syscalls.in` mapped to
 their Linux x86_64 numbers via `/usr/include/x86_64-linux-gnu/asm/unistd_64.h`
 -- regenerate with the one-off script if the Kraftfile ever changes what's
-provided), `monitor.py` (gdb-Python auto-continuing capture), and
-`run_capture.py` (orchestrator: start/attach -> capture for a duration ->
+provided), `legacy/monitor.py` (gdb-Python auto-continuing capture), and
+`legacy/run_capture.py` (orchestrator: start/attach -> capture for a duration ->
 detach -> stop+remove -> report) all work end to end:
 
 ```
-python3 run_capture.py --name vmicapture --duration 15 --log logs/capture.jsonl
+python3 legacy/run_capture.py --name vmicapture --duration 15 --log logs/capture.jsonl
 ```
 
 While that ran, 3 `curl localhost:8080/` requests produced 53 JSONL events
@@ -74,7 +74,7 @@ removed afterward (`kraft ps -a` empty).
 Two bugs found and fixed during this phase:
 - `kraft ps -o json` (and `-l -o json`) prints literal `null`, not `[]`,
   when no instance is running -- `json.loads(...) or []` guards this in
-  both `attach_gdbstub.py` and `run_capture.py`.
+  both `legacy/attach_gdbstub.py` and `legacy/run_capture.py`.
 - `gdb.lookup_global_symbol()` cannot find `_ukplat_syscall` because it's
   an assembly-only label with no DWARF debug_info (searches DWARF only).
   Fixed by using `gdb.decode_line("*_ukplat_syscall")` to validate/resolve
@@ -83,13 +83,13 @@ Two bugs found and fixed during this phase:
 
 ## Phase 3 result
 
-`bench_overhead.py` runs `ab` A/B (baseline: no gdbstub; monitored: VMI
+`legacy/bench_overhead.py` runs `ab` A/B (baseline: no gdbstub; monitored: VMI
 breakpoint active on every syscall) against the *same* running instance,
 switching conditions by attaching/detaching the gdbstub mid-run rather than
 rebooting between conditions:
 
 ```
-python3 bench_overhead.py --name vmibench --reps 5 --requests 500 --concurrency 5
+python3 legacy/bench_overhead.py --name vmibench --reps 5 --requests 500 --concurrency 5
 ```
 
 Reproducible result across independent runs (~-98.8%, -98.9%, -95.5% on
@@ -122,7 +122,7 @@ sequence died on rep 4). Guest crash dump showed `orig_rax: 2` (`open`)
 in progress, with large heap-like addresses in several registers --
 consistent with a resource leak (likely fd- or ramfs/vfscore-related,
 since nginx does `open`/`pread64`/`close` per static-file request) that
-eventually exhausts something. `bench_overhead.py` now tolerates a failed
+eventually exhausts something. `legacy/bench_overhead.py` now tolerates a failed
 rep instead of losing all data, and defaults to a scale (500 req total
 per condition) confirmed to stay under this threshold. Root-causing the
 leak itself is out of scope here but is a real finding worth a separate
@@ -157,7 +157,7 @@ Kraftfile, rebuilt, ran one `curl` and saved the in-guest console log as
 ground truth (`logs/strace_ground_truth.log`), then **restored the
 original verified binary from a pre-made backup** (`backup_verified_build/`,
 md5-confirmed identical, not just Kraftfile-reverted-and-rebuilt) and ran
-`run_capture.py` with the same single-`curl` workload for the VMI side.
+`legacy/run_capture.py` with the same single-`curl` workload for the VMI side.
 
 Result: the strace ground truth has 307 syscalls (because it captures the
 guest's *entire boot* -- ELF loading, dynamic linking of libc/libpcre/etc.,
@@ -186,13 +186,13 @@ correct**, not just plausible-looking.
 ## Phase 5 result (investigated, blocked)
 
 Goal: capture syscalls from the guest's actual first instruction of boot,
-not just from whenever `run_capture.py` happens to attach (which Phase 4
+not just from whenever `legacy/run_capture.py` happens to attach (which Phase 4
 showed is several seconds and ~289 syscalls late).
 
 Discovered that kraftkit launches QEMU with `-S` (paused at reset) and
 only resumes it itself, over its own QMP connection, a short but
 consistent **~90-100ms** after the monitor socket appears (measured
-directly). `run_capture_from_boot.py` races that window: pre-load gdb's
+directly). `legacy/run_capture_from_boot.py` races that window: pre-load gdb's
 debug symbols and pre-arm the syscall breakpoint as a *pending*
 breakpoint (before any target is attached -- confirmed this works fine
 in isolation, resolving purely off the symbol table) while `kraft run`'s
@@ -210,7 +210,7 @@ Two problems found, one fixed:
   `port 0.0.0.0:8080 is already in use by <name>` error and kill the
   instance it just spawned -- reproduced with a bisection down to a
   minimal case (plain `target remote` + `continue`, no breakpoint, no
-  monitor.py at all). Confirmed by omission: the identical race without
+  legacy/monitor.py at all). Confirmed by omission: the identical race without
   `-p` (no host port published) never fails. Root cause not identified
   beyond that scope (kraftkit's binary is stripped, no local source) --
   worked around by not publishing a port during this race.
@@ -223,7 +223,7 @@ Two problems found, one fixed:
   original instruction bytes are there both times, never replaced with
   the `0xCC` trap byte, and `info breakpoints` shows no hit count.
   Reproduces identically with a plain CLI `break` command (not just
-  monitor.py's Python `gdb.Breakpoint` subclass) and regardless of
+  legacy/monitor.py's Python `gdb.Breakpoint` subclass) and regardless of
   whether the breakpoint is set before or after `target remote` -- so
   it's not specific to this project's code. Giving the guest a head
   start before arming (tried 20ms and 150ms) didn't help either: RIP was
@@ -251,7 +251,7 @@ QEMU 6.2.0 call path -- `kvm_arch_handle_exit()` ->
 `qemu_system_debug_request()` -- and shows `gdbstub.c`'s breakpoint
 handling is itself a thin wrapper over `kvm_insert_breakpoint()`/
 `kvm_remove_breakpoint()`, i.e. logic already independent of gdb that new
-code can call directly). Implementation: `qemu_patch/` (source-level
+code can call directly). Implementation: `legacy/qemu_patch/` (source-level
 diff against the exact Debian-packaged QEMU 6.2.0 source, `apt-get
 source qemu-system-x86` -- same version as the system binary this
 project otherwise uses).
@@ -307,7 +307,7 @@ from inside this same QEMU process's own runstate callback, not an
 external process attaching after the fact), this incidentally achieves
 Phase 5's original goal too.
 
-**Overhead** (`bench_overhead_inline.py`, 3 reps x 200 req, concurrency
+**Overhead** (`legacy/bench_overhead_inline.py`, 3 reps x 200 req, concurrency
 5, three separate fresh instances -- ab-measured window excludes boot):
 
 | condition | requests/sec | vs. baseline |
@@ -327,7 +327,7 @@ that VM-exit/entry pair is not eliminated by moving the handler in-process
 process, VM-wide pause) is.
 
 **Design notes not obvious from a first read of the code, discovered
-during implementation** (see `qemu_patch/README.md` for full build
+during implementation** (see `legacy/qemu_patch/README.md` for full build
 instructions):
 - The BQL is already held for the specific `KVM_EXIT_DEBUG` branch of
   `kvm_arch_handle_exit()` (it wraps that one case in its own
@@ -348,18 +348,18 @@ instructions):
   installable without root in this environment; worked around by
   building `libslirp` from its own source into a local prefix and
   pointing `PKG_CONFIG_PATH` at it (fully documented in
-  `qemu_patch/README.md`).
+  `legacy/qemu_patch/README.md`).
 - `kraft run --qemu <path>` / `KRAFTKIT_QEMU` env var / `qemu:` in
   `~/.config/kraftkit/config.yaml` all point kraftkit at a custom-built
   QEMU binary -- no kraftkit source changes needed.
 
 **Live terminal view (added after the initial Phase 6 implementation)**:
-`run_capture_inline.py` now tails its own JSONL output file (a plain
+`legacy/run_capture_inline.py` now tails its own JSONL output file (a plain
 Python re-implementation of `tail -f`, polling every 50ms) and prints
 each event to the terminal as `[HH:MM:SS.mmm] name(args...)`, in
 addition to writing the JSONL as before -- the two are not exclusive.
 No change to the QEMU-side hot path (`vmi_monitor_breakpoint_hit()` in
-`qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`) was needed or made;
+`legacy/qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`) was needed or made;
 QEMU has no idea whether anything is reading the file it appends to.
 Running with no `--duration` now waits for Ctrl-C instead of exiting
 after a fixed time (`--duration N` still works exactly as before);
@@ -375,7 +375,7 @@ within this machine's run-to-run noise, not a clear, separate cost.
 ## Phase 7 result
 
 Investigation: `docs/phase7_boot_sync_investigation.md`. Implementation
-and verification: same doc's §13, plus `qemu_patch/` (`0003-fw_cfg.c.diff`,
+and verification: same doc's §13, plus `legacy/qemu_patch/` (`0003-fw_cfg.c.diff`,
 updated `vmi-syscall-monitor.{c,h}`).
 
 > **Correction (Phase 10-0)**: the "Root cause" paragraph below says the
@@ -463,7 +463,7 @@ same in-QEMU int3 -> step-over -> reinsert path as the entry hook
 (`vmi_monitor_is_hook_addr()`, with a per-vCPU record of which address is
 being stepped over), and is armed and read back together with the entry
 breakpoint by both the Phase 7 boot-sync path and the polling fallback.
-`run_capture_inline.py` finds the address by disassembling from
+`legacy/run_capture_inline.py` finds the address by disassembling from
 `_ukplat_syscall` (`objdump`, first `jmp *%rcx`) and passes it as
 `VMI_MONITOR_RET_ADDR`. If that variable is unset, QEMU behaves exactly
 as in Phase 7.
@@ -511,13 +511,13 @@ brk in the generic, non-`HAVE_uk_syscall_brk` form, i.e. it did not provide
 brk, while the current binary does (`brk-1` in `provided_syscalls.in`).
 
 **Overhead** (re-measured 2026-10-13 with
-`bench_overhead_inline.py --ret --alternate 5 --requests 300 --concurrency 5
+`legacy/bench_overhead_inline.py --ret --alternate 5 --requests 300 --concurrency 5
 --csv logs/bench_p8_ab.csv`):
 
 - A = monitor off: patched QEMU, `VMI_MONITOR_*` unset.
 - B = proposed method: same patched QEMU, `VMI_MONITOR_ADDR=0x101000` and
   `VMI_MONITOR_RET_ADDR=0x1010da`. Both addresses were resolved with
-  `nm`/`objdump`, the same way `run_capture_inline.py` does it.
+  `nm`/`objdump`, the same way `legacy/run_capture_inline.py` does it.
 - Same QEMU binary, same unikernel image and same host for A and B.
 - Trials run in the order A1,B1,A2,B2,...,A5,B5. Each trial boots a fresh
   instance, waits 3s, sends 50 warmup requests (discarded), then runs one
@@ -572,7 +572,7 @@ Environment:
 - Host: Intel Core i7-9700K (8 cores / 8 threads, 3.6 GHz base, 4.9 GHz
   max), 15 GiB RAM.
 - OS and kernel: Ubuntu 22.04.5 LTS, Linux 5.15.0-198-generic.
-- QEMU: 6.2.0 with the patch in `qemu_patch/`, binary
+- QEMU: 6.2.0 with the patch in `legacy/qemu_patch/`, binary
   `/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64`.
 - Tools: kraft 0.12.16, ApacheBench 2.3, guest image
   `.unikraft/build/nginx_qemu-x86_64`.
@@ -580,7 +580,7 @@ Environment:
 **Compatibility**: with return capture on, lines are in *completion*
 order rather than entry order (identical for this single-threaded
 workload), and an unfinished line may appear at the end. `validate_strace.py`
-only reads `syscall` and is unaffected. `bench_overhead_inline.py`
+only reads `syscall` and is unaffected. `legacy/bench_overhead_inline.py`
 sets `VMI_MONITOR_RET_ADDR` only with `--ret`; without it, it still
 measures the entry-only mechanism.
 
@@ -589,8 +589,8 @@ measures the entry-only mechanism.
 Goal: find out where the Phase 8 slowdown goes. Phase 8 ran at 6.4% of the
 unmonitored throughput in `logs/bench_p8_ab.csv`.
 
-**Switches** (QEMU side, `qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`;
-details in `qemu_patch/README.md`). Each one removes one stage from the
+**Switches** (QEMU side, `legacy/qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`;
+details in `legacy/qemu_patch/README.md`). Each one removes one stage from the
 per-hit path, and with all of them unset the behavior is Phase 8's:
 
 - `VMI_MONITOR_NO_REGS`: skip `cpu_synchronize_state()` and every register
@@ -616,7 +616,7 @@ hooks (0x101000 / 0x1010da).
 **Method**:
 
 ```
-python3 bench_overhead_inline.py --breakdown 5 --requests 300 --concurrency 5 \
+python3 legacy/bench_overhead_inline.py --breakdown 5 --requests 300 --concurrency 5 \
     --csv logs/bench_breakdown.csv
 ```
 
@@ -721,7 +721,7 @@ at most ~13%.
 
 - Host: Intel Core i7-9700K (8C/8T, 3.6 GHz base / 4.9 GHz max), 15 GiB
   RAM, Ubuntu 22.04.5 LTS, Linux 5.15.0-198-generic.
-- QEMU 6.2.0 + `qemu_patch/`, rebuilt with the Phase 9 switches. The same
+- QEMU 6.2.0 + `legacy/qemu_patch/`, rebuilt with the Phase 9 switches. The same
   binary was used for all conditions.
 - Tools: kraft 0.12.16, ApacheBench 2.3.
 - Host preparation: CPU governor `performance` on all 8 CPUs (default here
@@ -856,7 +856,7 @@ unverified; SMP untested; overhead not measured yet (10-5).
 
 ## Notes for later phases
 
-- `attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol
+- `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol
   (not QMP/JSON) — verified empirically. It echoes input with ANSI
   cursor-movement escapes like a readline TTY; `hmp_command()` strips
   these and returns the clean reply text.

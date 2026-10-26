@@ -13,20 +13,20 @@ qemu-system-x86_64 child it execs.
 Usage:
     # interactive: runs until Ctrl-C, printing syscalls to the terminal
     # as they happen while also writing the full JSONL as before
-    python3 run_capture_inline.py --name vmiinline
+    python3 legacy/run_capture_inline.py --name vmiinline
 
     # fixed-duration, non-interactive (old behavior, still supported)
-    python3 run_capture_inline.py --name vmiinline --duration 15 \
+    python3 legacy/run_capture_inline.py --name vmiinline --duration 15 \
         --log logs/capture_inline.jsonl \
         --qemu /home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64
 
     # suppress the live terminal view entirely (JSONL still written) --
     # useful when scripting or when comparing overhead with/without it
-    python3 run_capture_inline.py --name vmiinline --duration 15 --quiet
+    python3 legacy/run_capture_inline.py --name vmiinline --duration 15 --quiet
 
     # only start printing once nginx has actually accepted a connection,
     # to skip the (potentially large) burst of boot-time syscalls
-    python3 run_capture_inline.py --name vmiinline --show-after-ready
+    python3 legacy/run_capture_inline.py --name vmiinline --show-after-ready
 
 If --addr is omitted, resolves _ukplat_syscall via `nm` against the
 project's .dbg build (same method Phase 1/2 used), not a hardcoded
@@ -56,7 +56,8 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROJECT_DIR = HERE.parent
+REPO = HERE.parent          # vmi_syscall_monitor/ (this file is in legacy/)
+PROJECT_DIR = REPO.parent
 DEFAULT_QEMU = "/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64"
 
 TAIL_POLL_S = 0.05          # how often to check the JSONL file for new lines
@@ -227,7 +228,7 @@ def main() -> int:
     parser.add_argument("--name", default="vmiinline")
     parser.add_argument("--duration", type=float, default=None,
                          help="auto-stop after this many seconds; omit to run until Ctrl-C")
-    parser.add_argument("--log", default=str(HERE / "logs" / "capture_inline.jsonl"))
+    parser.add_argument("--log", default=str(REPO / "logs" / "capture_inline.jsonl"))
     parser.add_argument("--qemu", default=DEFAULT_QEMU)
     parser.add_argument("--addr", default=None, help="hex address, e.g. 0x101000 (default: resolved via nm)")
     parser.add_argument("--ret-addr", default=None,

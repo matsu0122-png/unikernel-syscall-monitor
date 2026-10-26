@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DBG_KERNEL = HERE.parent / ".unikraft/build/nginx_qemu-x86_64.dbg"
+DBG_KERNEL = HERE.parent.parent / ".unikraft/build/nginx_qemu-x86_64.dbg"  # legacy/ -> repo -> app
 
 
 def _stream_to_stdout(proc: subprocess.Popen, buf: list) -> None:

@@ -23,7 +23,7 @@ or needs to be -- this stays a host-only, agentless VMI approach throughout.
 ## 0. Summary of the finding, up front
 
 The current 200ms remove/insert/readback retry loop (`vmi_try_arm()` in
-`qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`) works, but is
+`legacy/qemu_patch/target/i386/kvm/vmi-syscall-monitor.c`) works, but is
 probabilistic: it wins the race against boot *sometimes*. Investigating
 **why** the byte gets reverted revealed a **precise, one-shot, host-side
 C function call** that is responsible: `fw_cfg_dma_transfer()` in
@@ -470,7 +470,7 @@ No code was changed, committed, or pushed for this investigation.
 ## 13. Implementation and verification results (follow-up pass)
 
 The design above was implemented and verified (still not committed/pushed
--- see `qemu_patch/` and this project's `README.md` Phase 7 section for
+-- see `legacy/qemu_patch/` and this project's `README.md` Phase 7 section for
 the user-facing summary). This section records what was actually found
 once built, including where reality diverged from §5's assumptions.
 

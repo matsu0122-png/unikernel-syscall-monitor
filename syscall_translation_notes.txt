@@ -298,7 +298,7 @@ API向けに書き直し、必要な機能だけリンク)であれば(1)の効�
      newfstatat->pread64->writev->close + 定期gettimeofday/
      clock_gettime/epoll_wait)からの逸脱を検知。本来出ないはずの
      execve、webroot外へのopenat、起動後のPROT_EXEC付きmmap等。
-     monitor.py/capture.jsonlへの分析レイヤー追加のみで実装可能。
+     legacy/monitor.py/capture.jsonlへの分析レイヤー追加のみで実装可能。
   2. LSTAR/STAR MSR書き換えの監視(既存GDBブレークポイント機構を流用):
      plat/common/include/x86/cpu.h:269-279のwrmsrl命令アドレスに
      ブレークポイントを追加。起動時1回だけがヒットするのが正常系
@@ -802,7 +802,7 @@ syscall監視・実装関数レベルのブレークポイント(15章)の両方
     を操作しても回避できない。
   - 実装手段の現実的な評価(本プロジェクトのインフラを前提):
     - ハードウェアウォッチポイント(GDBのwatch、DR0-3レジスタ)は
-      phase1_manual_test.gdbのコメントで既に「KVM_SET_GUEST_DEBUG
+      legacy/phase1_manual_test.gdbのコメントで既に「KVM_SET_GUEST_DEBUG
       経由のハードウェアブレークポイントには既知の信頼性バグがある」
       と判明しており不採用。
     - KVMのdirty-page tracking(KVM_MEM_LOG_DIRTY_PAGES+

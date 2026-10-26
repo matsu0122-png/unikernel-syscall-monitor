@@ -6,7 +6,7 @@ citations are against the sources actually present on this host:
 - Unikraft: `../.unikraft/unikraft/` (the tree the current image was built from)
 - QEMU: `/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/` (read only; the
   files cited here, `hw/i386/multiboot.c`, `hw/core/loader.c`,
-  `hw/i386/pc_piix.c`, are not touched by `qemu_patch/`, which only changes
+  `hw/i386/pc_piix.c`, are not touched by `legacy/qemu_patch/`, which only changes
   `kvm.c`, `meson.build` and `fw_cfg.c`)
 - Distro QEMU used for the live tests: `/usr/bin/qemu-system-x86_64`,
   `QEMU emulator version 6.2.0 (Debian 1:6.2+dfsg-2ubuntu6.31)`

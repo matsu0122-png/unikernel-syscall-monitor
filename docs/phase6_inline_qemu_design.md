@@ -70,7 +70,7 @@ debug-exit handling is architecturally built to hand control to an
 external RSP client, not to resume autonomously.
 
 From there, `gdbstub.c` (a separate `GDBState` state machine driven by RSP
-packets over the socket `attach_gdbstub.py` opened) does the rest, and
+packets over the socket `legacy/attach_gdbstub.py` opened) does the rest, and
 critically, **for the KVM accelerator it does not implement breakpoint
 patching itself** — it delegates directly to the same generic API a
 custom implementation would call:
@@ -89,7 +89,7 @@ static int gdb_breakpoint_insert(int type, target_ulong addr, target_ulong len)
 ```
 
 The "restore original byte → single-step → reinsert → continue" sequence
-that `monitor.py` currently *appears* to do as one atomic Python callback
+that `legacy/monitor.py` currently *appears* to do as one atomic Python callback
 is, in stock QEMU, actually **driven by the remote gdb client issuing four
 separate RSP commands** (`z0` remove, `s` step, `Z0` reinsert, `c`
 continue) — i.e. up to 4 additional socket round trips beyond the initial
@@ -142,7 +142,7 @@ After that, plain field reads on `X86CPU *cpu = X86_CPU(cs); CPUX86State
 | r9  | `env->regs[9]`  | kvm.c:2527 |
 | rip | `env->eip` | cpu.h:1447, filled by `kvm_getput_reg(&regs.rip, &env->eip, set)` (kvm.c:2532) |
 
-This is exactly the register set `monitor.py` already reads via gdb's `g`
+This is exactly the register set `legacy/monitor.py` already reads via gdb's `g`
 packet — same values, just read in-process instead of over RSP.
 
 ### Q3. How to read/write guest memory at a guest virtual address
@@ -297,7 +297,7 @@ plugin alternative for the KVM accelerator.
   (`cpu_handle_guest_debug`'s current behavior) — a custom handler resumes
   autonomously instead of parking the whole machine waiting for an
   external controller.
-- Python interpreter overhead for the per-hit callback (`monitor.py`'s
+- Python interpreter overhead for the per-hit callback (`legacy/monitor.py`'s
   `stop()`), replaced by a plain C function.
 
 **Stays (inherent to this mechanism, not this project's implementation):**
@@ -320,7 +320,7 @@ plugin alternative for the KVM accelerator.
 should shrink substantially (the dominant cost — cross-process RSP round
 trips, per README's own Phase 3 analysis — goes away), but a real,
 non-zero cost tied to "one syscall = two VM-exits" remains. This should be
-re-measured with `bench_overhead.py`'s existing methodology once
+re-measured with `legacy/bench_overhead.py`'s existing methodology once
 implemented, not assumed.
 
 ## 3. Before / after
@@ -334,7 +334,7 @@ Unikraft nginx
   → EXCP_DEBUG → cpu_handle_guest_debug (softmmu/cpus.c)
   → qemu_system_debug_request(): 仮想マシン全体を停止
   → gdbstub.c: RSPで外部gdbへ通知 (別プロセス, TCPソケット)
-  → gdb: g(レジスタ読取) → monitor.py stop()コールバック → JSONLへ記録
+  → gdb: g(レジスタ読取) → legacy/monitor.py stop()コールバック → JSONLへ記録
   → gdb: z0(除去)→s(1命令step)→Z0(再設置)→c(再開)  ※4往復
   → QEMU → Guest再開
 
@@ -363,7 +363,7 @@ Unikraft nginx
 | KVM_EXIT_DEBUG処理 | `target/i386/kvm/kvm.c` | `kvm_handle_debug()` | **無変更**。`EXCP_DEBUG`の返却はそのまま利用 |
 | レジスタ取得処理 | 新設ハンドラ内 | `cpu_synchronize_state(cs)` 呼び出し後 `env->regs[...]`/`env->eip` を直接参照 | 新規コードは数行(構造体フィールド読み取りのみ) |
 | breakpoint step-over処理 | 新設ハンドラ内 | `kvm_remove_breakpoint()` → `cpu_single_step(cpu,1)` → (次のEXCP_DEBUGで) `cpu_single_step(cpu,0)` → `kvm_insert_breakpoint()` | **要:状態管理**(§2 Q5のgotcha) — 「ブレークポイントヒット待ち」と「step完了待ち」を区別する per-CPU フラグが新規に必要 |
-| ログ出力処理 | 新設ハンドラ内 | JSONL相当を直接`fprintf`/`qemu_fopen`等でファイルへ | 既存`monitor.py`のJSON構築ロジックをCへ移植(構造は単純: ts, num, syscall名, args) |
+| ログ出力処理 | 新設ハンドラ内 | JSONL相当を直接`fprintf`/`qemu_fopen`等でファイルへ | 既存`legacy/monitor.py`のJSON構築ロジックをCへ移植(構造は単純: ts, num, syscall名, args) |
 | syscall番号→名前解決 | 新設 (小さな静的テーブル) | 該当なし | `syscall_table.py`のC版(185エントリの`static const`配列) |
 | 起動時のアドレス指定 | `vl.c` または新規`-object`/コマンドライン引数 | 新規パース処理 | `_ukplat_syscall`のアドレス(`nm`/`readelf`で事前確認した値、本ドキュメント§0参照)を実行時に受け取る。QEMU内でDWARFレスELFシンボルを解決する仕組みは新規に作らず、既存ツールと同じ「外部で事前確認した値を渡す」方式を踏襲 |
 
@@ -384,7 +384,7 @@ Unikraft nginx
    dependency for this tool. Worth deciding whether kraftkit can be
    pointed at a custom-built QEMU binary before investing in the patch
    (not yet checked — separate from this investigation's scope).
-4. Re-measure with `bench_overhead.py` once implemented — §2 Q9's
+4. Re-measure with `legacy/bench_overhead.py` once implemented — §2 Q9's
    "expected outcome" is reasoned from the code, not measured yet.
 
 No code has been changed for this investigation. All quoted paths/lines
@@ -573,7 +573,7 @@ single-step. No conflict found, but noted as checked rather than assumed.
 
 ### 6.5 Safe timing for the first `kvm_insert_breakpoint()` call
 
-Phase 5's dead end (README, and `run_capture_from_boot.py`) was arming
+Phase 5's dead end (README, and `legacy/run_capture_from_boot.py`) was arming
 during kraftkit's own `-S` (paused-at-reset) window: `x/8xb 0x101000`
 showed the `0xCC` byte never actually got written, reproducibly, even
 though the same write mechanism works fine once the guest is running.
@@ -589,7 +589,7 @@ still in that early real-mode context is exactly the kind of translation
 mismatch that would silently fail to land where expected.
 
 For Phase 6 (attach-after-boot model, same scope as today's
-`run_capture.py` — **not** re-attempting Phase 5's from-boot capture),
+`legacy/run_capture.py` — **not** re-attempting Phase 5's from-boot capture),
 the safe and idiomatic hook is `qemu_add_vm_change_state_handler()`
 (`softmmu/runstate.c:309`), which fires via `vm_state_notify(1,
 RUN_STATE_RUNNING)` (`softmmu/cpus.c:691`) exactly when the machine
@@ -638,7 +638,7 @@ Confirmed by two independent means:
 ways to point `kraft run` at a custom-built QEMU binary, in order of
 convenience for iterating on Phase 6:
 1. Per-invocation: `kraft run --qemu /path/to/custom/qemu-system-x86_64 ...`
-   (also usable from `run_capture.py` by adding `"--qemu",
+   (also usable from `legacy/run_capture.py` by adding `"--qemu",
    CUSTOM_QEMU_PATH` to its `kraft run` argv).
 2. Per-shell: `KRAFTKIT_QEMU=/path/to/custom/qemu-system-x86_64 kraft run ...`
 3. Persistent: add `qemu: /path/to/custom/qemu-system-x86_64` to
@@ -683,8 +683,8 @@ No new file, no change to `accel/kvm/kvm-accel-ops.c`, no change to
    局所的。
 3. ログ書き込みが同期I/O(`fprintf`+`fflush`相当)である場合、
    BQL保持中に呼ばれる(§1で訂正した通りこの分岐はロック保持下)ため、
-   ディスクI/Oが遅いとBQLを長く握ることになる — 現行の`monitor.py`も
+   ディスクI/Oが遅いとBQLを長く握ることになる — 現行の`legacy/monitor.py`も
    同様の同期書き込みをしているため後退ではないが、行のバッファリング
    方針(line-bufferedか、非同期キューに逃がすか)は実装時に決める。
 4. §5にある通り、Q9の「削減効果」はまだ実測していない —
-   実装後に`bench_overhead.py`で再計測する。
+   実装後に`legacy/bench_overhead.py`で再計測する。
