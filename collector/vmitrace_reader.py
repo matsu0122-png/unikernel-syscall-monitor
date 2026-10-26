@@ -4,10 +4,13 @@ Standard library only, so integrity/ can reuse it. Nothing read from the
 guest is trusted:
 
 - Addresses, sizes and constants come from manifest.json; the guest header
-  is only *compared* with it (byte-for-byte via its sha256, then field by
-  field for the error message).
-- Only two windows of the file are mapped, read-only: the page holding the
-  64-byte header, and the ring range (state array + records).
+  and bitmap are only *compared* with it (byte-for-byte via their sha256;
+  header fields are named in the error message). The header carries a
+  per-build nonce (ABI v2), so a manifest of another build with the same
+  layout does not match.
+- Only three windows of the file are mapped, read-only: the page holding
+  the 64-byte header, the page holding the 64-byte bitmap, and the ring
+  range (state array + records).
 - Every record is checked (seq protocol, nr range, lcpu, flags, timestamps);
   rejects are counted, never emitted.
 
@@ -24,7 +27,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 PAGE = 4096
-HDR_FMT = "<QIIIIQQQ"
+HDR_FMT = "<QIIIIQQQQQ"
 REC_FMT = "<QQQIHH6QqQ"
 REC_SIZE = struct.calcsize(REC_FMT)          # 96
 STATE_SIZE = 64
@@ -64,6 +67,8 @@ class Manifest:
             raise ManifestError("capacity is not a power of two")
         regions = {r["name"]: r for r in m["hash_regions"]}
         self.header_sha256 = regions["vmitrace_hdr"]["sha256"]
+        self.bitmap_sha256 = regions["vmitrace_bitmap"]["sha256"]
+        self.build_nonce = tuple(int(x, 16) for x in m["build_nonce"])
         words = [int(w, 16) for w in m["bitmap"]["words"]]
         self.selected = frozenset(
             n for n in range(BITMAP_BITS) if words[n >> 6] >> (n & 63) & 1)
@@ -103,42 +108,56 @@ class GuestRing:
             self.hdr_page = exp["header_addr"] & ~(PAGE - 1)
             self._hdr_map = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
                                       mmap.PROT_READ, offset=self.hdr_page)
+            self.bm_page = exp["bitmap_addr"] & ~(PAGE - 1)
+            if (exp["bitmap_addr"] + 64 - self.bm_page > PAGE
+                    or size < exp["bitmap_addr"] + 64):
+                raise ValueError("bitmap crosses a page or the file end")
+            self._bm_map = mmap.mmap(fd, PAGE, mmap.MAP_SHARED,
+                                     mmap.PROT_READ, offset=self.bm_page)
             self.ring_base = ring["start"] & ~(PAGE - 1)
             ring_len = -(-ring["end"] // PAGE) * PAGE - self.ring_base
             self._ring_map = mmap.mmap(fd, ring_len, mmap.MAP_SHARED,
                                        mmap.PROT_READ, offset=self.ring_base)
         finally:
             os.close(fd)
-        self.mapped = [(self.hdr_page, PAGE), (self.ring_base, ring_len)]
+        self.mapped = [(self.hdr_page, PAGE), (self.bm_page, PAGE),
+                       (self.ring_base, ring_len)]
         self.next_idx = [0] * manifest.nr_lcpu
         self.last_widx = [0] * manifest.nr_lcpu
 
     def close(self):
         self._hdr_map.close()
+        self._bm_map.close()
         self._ring_map.close()
 
     # --- header ---
 
     def header_status(self):
-        """'ok', 'not_loaded' (all zero: kernel not in RAM yet) or a
-        mismatch description."""
+        """'ok' when header and bitmap both match the manifest,
+        'not_loaded' (header all zero: kernel not in RAM yet), or a
+        mismatch description. Records must only be read on 'ok'."""
         off = self.man.expected["header_addr"] - self.hdr_page
         raw = bytes(self._hdr_map[off:off + 64])
-        if hashlib.sha256(raw).hexdigest() == self.man.header_sha256:
-            return "ok"
-        if raw == bytes(64):
-            return "not_loaded"
-        f = struct.unpack_from(HDR_FMT, raw)
-        names = ("magic", "version", "record_size", "capacity", "nr_lcpu",
-                 "state_addr", "records_addr", "bitmap_addr")
-        want = (self.man.abi["magic"], self.man.abi["version"],
-                self.man.abi["record_size"], self.man.abi["capacity"],
-                self.man.abi["nr_lcpu"], self.man.expected["state_addr"],
-                self.man.expected["records_addr"],
-                self.man.expected["bitmap_addr"])
-        diff = [f"{n}={g:#x}!={w:#x}" for n, g, w in zip(names, f, want)
-                if g != w]
-        return "mismatch: " + (", ".join(diff) or "reserved bytes differ")
+        if hashlib.sha256(raw).hexdigest() != self.man.header_sha256:
+            if raw == bytes(64):
+                return "not_loaded"
+            f = struct.unpack_from(HDR_FMT, raw)
+            names = ("magic", "version", "record_size", "capacity",
+                     "nr_lcpu", "state_addr", "records_addr", "bitmap_addr",
+                     "build_nonce[0]", "build_nonce[1]")
+            want = (self.man.abi["magic"], self.man.abi["version"],
+                    self.man.abi["record_size"], self.man.abi["capacity"],
+                    self.man.abi["nr_lcpu"], self.man.expected["state_addr"],
+                    self.man.expected["records_addr"],
+                    self.man.expected["bitmap_addr"]) + self.man.build_nonce
+            diff = [f"{n}={g:#x}!={w:#x}" for n, g, w in zip(names, f, want)
+                    if g != w]
+            return "header mismatch: " + (", ".join(diff) or "?")
+        off = self.man.expected["bitmap_addr"] - self.bm_page
+        bm = bytes(self._bm_map[off:off + 64])
+        if hashlib.sha256(bm).hexdigest() != self.man.bitmap_sha256:
+            return "bitmap mismatch"
+        return "ok"
 
     # --- ring ---
 

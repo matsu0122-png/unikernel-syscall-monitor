@@ -44,7 +44,7 @@
 #include <uk/arch/types.h>
 
 #define VMITRACE_MAGIC		0x4543415254494d56ULL	/* "VMITRACE" */
-#define VMITRACE_VERSION	1
+#define VMITRACE_VERSION	2	/* 2: build_nonce in the header */
 
 #define VMITRACE_BITMAP_BITS	512
 #define VMITRACE_BITMAP_WORDS	(VMITRACE_BITMAP_BITS / 64)
@@ -64,14 +64,16 @@ struct vmitrace_hdr {
 	__u64 state_addr;	/* 24 GPA of vmitrace_lcpu_state[0] */
 	__u64 records_addr;	/* 32 GPA of ring 0, record 0 */
 	__u64 bitmap_addr;	/* 40 GPA of the 512-bit syscall bitmap */
-	__u64 reserved[2];	/* 48 */
+	__u64 build_nonce[2];	/* 48 random per build (Makefile.uk); lets the
+				 *    host tell builds with identical layouts
+				 *    apart. Not a secret: the guest can read it */
 };				/* 64 */
 
 /* One per lcpu, 64 bytes so lcpus never share a cache line. */
 struct vmitrace_lcpu_state {
 	__u64 write_idx;	/*  0 records ever written, monotonic */
 	__u64 dropped;		/*  8 reserved for events the guest skips;
-				 *    version 1 never increments it (always 0).
+				 *    versions 1-2 never increment it (always 0).
 				 *    Overwrite loss is not counted here, see
 				 *    "Loss" above. */
 	__u64 reserved[6];	/* 16 */

@@ -29,6 +29,11 @@ config LIBVMITRACE_GROUP_NET
 	default y
 	depends on !LIBVMITRACE_GROUP_ALL
 
+config LIBVMITRACE_GROUP_NETFD
+	bool "NETFD: NET + close, read, write, readv, writev, epoll_ctl"
+	default n
+	depends on !LIBVMITRACE_GROUP_ALL
+
 config LIBVMITRACE_GROUP_FILE
 	bool "FILE: open/read/write/stat/close and other path/fd syscalls"
 	default n

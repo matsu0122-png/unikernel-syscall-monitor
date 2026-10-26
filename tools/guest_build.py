@@ -13,7 +13,7 @@ backup_verified_build/). Instead:
            vendor copy, plus lib-vmitrace for non-base variants) and run
            `kraft build`, then tools/gen_manifest.py for non-base variants.
 
-Variants: base (no lib-vmitrace), net, file, time, all.
+Variants: base (no lib-vmitrace), net, netfd, file, time, all.
 
     python3 tools/guest_build.py vendor
     python3 tools/guest_build.py build all
@@ -48,6 +48,7 @@ VENDOR_ITEMS = [
 GROUPS = {
     "base": None,
     "net": ["NET"],
+    "netfd": ["NETFD"],
     "file": ["FILE"],
     "time": ["TIME"],
     "all": ["ALL"],

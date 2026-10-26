@@ -21,6 +21,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-1 (guest library `guest/lib-vmitrace`): done, smoke-tested.** See below and `docs/phase10_1_guest_library.md`. Records selected binary syscalls from syscall_shim's enter/exit hooks into a guest-RAM ring (no VM exit, overwrite when full), built from pinned local copies of Unikraft/lwip/libelf/elfloader with `tools/guest_build.py`. On the distro QEMU the ALL build's records start at `brk` and the per-request sequence and return values match Phase 8; the NET build records only the 16 NET syscalls.
 - **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`. Follow-ups before 10-3: `_ukplat_syscall` added as the 9th hash region (range found by disassembly), shared files moved to `/dev/shm/vmitrace/`, and security-model limits written down.
 - **Phase 10-3 (collector): done, tested as a single user.** See below. `collector/vmitrace_collector.py` maps only the header page and the ring range read-only, refuses to read while the guest header differs from the manifest, validates every record, and writes Phase-8-compatible JSONL (`validate_strace.py`: full match) plus OTel spans grouped into one trace per connection. Timestamps land within about +-1.5 ms of host time at 10 ms polling. The `vmitrace` group and separate users need root: commands are listed in the 10-3 section, not run.
+- **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
 
 ## Phase 1 result
 
@@ -1067,7 +1068,8 @@ collector/.venv/bin/python collector/vmitrace_collector.py \
     matching header, so it can start before QEMU.
   - Watches the pidfile pid. On exit: final drain (the mapping outlives
     the file), flush, stats, then deletes `<name>.mem` and `<name>.json`
-    (decision 7).
+    (decision 7). *(Changed after 10-3: the collector no longer deletes
+    anything. See "Phase 10-3 follow-ups".)*
 
 **Confirmed** (ALL build, distro QEMU through `tools/qemu-wrapper.sh`,
 single user):
@@ -1143,6 +1145,126 @@ echo 'd /dev/shm/vmitrace 0750 matsu vmitrace -' | \
 
 After `usermod`, the QEMU user must log in again (or `newgrp vmitrace`)
 before the wrapper can `chgrp`.
+
+## Phase 10-3 follow-ups (before 10-4)
+
+Decisions on the 10-3 open points, plus fixes, implemented and tested:
+
+- **Build identity, both (a) and (b)**:
+  - (a) ABI **v2**: the header's last 16 bytes are `build_nonce[2]`, random
+    per build. `lib-vmitrace/Makefile.uk` regenerates
+    `vmitrace_nonce.h` from `/dev/urandom` on every make run (a phony
+    target, the same idiom as syscall_shim's `provided_syscalls.in.new`),
+    and `vmitrace.o` depends on it. `gen_manifest.py` reads the nonce back
+    from the ELF into `manifest.build_nonce` and refuses a zero nonce or a
+    version other than 2.
+  - Rebuilding NET changed the nonce: `0x8dc38076...` became
+    `0x30e7bb6a...`. ALL, NET and NETFD all have different header hashes.
+  - (b) the collector also maps the page holding the bitmap
+    (`0xf36000+0x1000`), and reads records only while header **and**
+    bitmap match the manifest's sha256.
+  - Test: the NET manifest against a live ALL guest is now refused with
+    `header mismatch: build_nonce[0]=0x43795732dfa821ad!=0x30e7bb6a7e98bbeb,
+    ...` (rc 2). Before this change, the same test passed the header check.
+- **Deleting the shared files** (directory stays 0750):
+  - `tools/qemu-wrapper.sh` starts `tools/vmitrace-cleanup.sh` right
+    before `exec`ing QEMU: `setsid`, stdio on `/dev/null`, same user.
+  - The cleanup process takes QEMU's pid from the pidfile and accepts it
+    only if `/proc/<pid>/cmdline` contains `mem-path=<file>,`, so a reused
+    pid is not mistaken for QEMU. When that process is gone, it removes
+    `<name>.mem`/`.json`, but only if their inodes are the ones the wrapper
+    created. If QEMU never appears, it cleans up 10 s after the wrapper's
+    process has gone.
+  - The collector no longer deletes anything. After QEMU exits it only logs
+    and records `shared_files_left`.
+  - Verified (NETFD instance):
+    - `kraft run -d` returned in 0.34 s while the cleanup process kept
+      running in its own session (ppid 1), so kraftkit does not wait for it.
+    - `kraft stop` 0.15 s, `kraft rm` 0.24 s.
+    - Both files were gone about 1.2 s after `kraft stop`, with syslog
+      entries `vmitrace-cleanup: removed ...`. The collector logged
+      `shared files still present: none`, and no cleanup process remained.
+- **Connections in groups without `close`**:
+  - `traces.py` marks a connection *closing* on `recvfrom(N) = 0` or
+    `shutdown(N) = 0`. It ends at the `close(N)` that normally follows, or
+    at the next record of the same thread that is not about N.
+  - Connections idle for 30 s (guest time) end with
+    `vmitrace.incomplete = "idle timeout"`.
+  - A connection root now ends at its last span, not at whatever record
+    triggered the end. Per-reason counters are in `traces` stats.
+  - Live check: NET build, 3 curls -> 3 connections, all
+    `closed_by_eof_or_shutdown` (before this change they stayed open until
+    flush). NETFD and ALL -> all `closed_by_close`.
+- **New group NETFD** = NET + `close, read, write, readv, writev,
+  epoll_ctl` (22 syscalls; Kconfig `LIBVMITRACE_GROUP_NETFD`,
+  `guest_build.py build netfd`). With 3 curls: 68 records (NET: 26, ALL:
+  341).
+- **Time sync factored out** into `collector/timesync.py`
+  (`OffsetEstimator`). Stats now include `offset_samples` and
+  `offset_resets`. `docs/phase10_plan.md` makes `offset_resets` mandatory
+  in every 10-5 report, and adds the NET vs NETFD comparison.
+- **Unit tests** (all pass):
+  - `collector/test_reader.py`, 9 tests, now including nonce mismatch,
+    bitmap mismatch and an unloaded bitmap.
+  - `collector/test_timesync.py`, 7 tests, including simulated polling at
+    1/10/100 ms with jitter: the estimate stays inside the true bracket,
+    within one interval, with 0 resets.
+  - `collector/test_traces.py`, 12 tests with an in-memory exporter: full
+    ALL connection, NET EOF close, close after EOF, shutdown, idle timeout
+    and its boundary, fd reuse, ERROR status, entry-only `exit_group`,
+    explicit times, flush, event-loop rollover. Run with
+    `collector/.venv/bin/python`.
+
+## Phase 10-4 result
+
+Goal: OTLP gRPC from the collector into a real Jaeger, and traces visible
+in the UI.
+
+**What was done**: `deploy/docker-compose.yml` runs
+`jaegertracing/all-in-one:1.57` (already on this host, version pinned) with
+OTLP enabled and in-memory storage. The host ports are **`127.0.0.1:14317`
+(OTLP gRPC) and `127.0.0.1:26686` (UI/API)**, not 4317/16686: this host
+already runs an unrelated otel-collector + Jaeger stack on those ports,
+which was not touched. Both ports bind to loopback only, because spans
+contain syscall arguments.
+
+```
+docker compose -f deploy/docker-compose.yml up -d
+collector/.venv/bin/python collector/vmitrace_collector.py \
+    --manifest <build>/manifest.json --instance <name> --jsonl out.jsonl \
+    --otel otlp --otlp-endpoint localhost:14317
+# UI: http://localhost:26686, service "vmitrace"
+```
+
+**Confirmed** (ALL build, distro QEMU via the wrapper, 3 curls):
+
+- Collector stats: 341 records, 0 rejects, 3 connections all
+  `closed_by_close`, `offset_resets` 0, `offset_uncertainty_ns` 145,682,
+  shared files removed by the cleanup process.
+- Jaeger query API (`/api/services`, `/api/traces?service=vmitrace`):
+  - Service `vmitrace`, 5 traces, 346 spans = 341 syscalls + 3 connection
+    roots + 2 event-loop roots.
+  - The three connection traces read `accept4=7 epoll_ctl=0 recvfrom=78
+    [openat=8 newfstatat=0] pread64=612 writev=850 setsockopt=0
+    recvfrom=0 close=0` (openat/newfstatat only for the first request).
+  - 84 spans have `otel.status_code=ERROR` with `syscall.errno=2`,
+    `syscall.errno_name=ENOENT`.
+  - Resource tags: `vmitrace.instance`, `vmitrace.build_id`.
+- **UI**: rendered with headless Firefox (`/usr/bin/firefox --screenshot`;
+  a local wrapper page delays the load event so the SPA finishes fetching):
+  - `docs/img/phase10_4_jaeger_search.png`: "5 Traces", three
+    `vmitrace: connection` and the event-loop traces (one marked "4
+    Errors").
+  - `docs/img/phase10_4_jaeger_connection_trace.png`: one connection trace,
+    1.34 ms, 11 spans (accept4 ... close) on the timeline.
+
+**Notes**:
+
+- The Jaeger container is left running (`docker compose -f
+  deploy/docker-compose.yml down` stops it). Its storage is in memory.
+- The first UI screenshot attempt showed only the loading spinner:
+  `--screenshot` fires on the load event, before the SPA's API call
+  returns. Hence the delaying wrapper page.
 
 ## Notes for later phases
 

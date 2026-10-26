@@ -1,8 +1,7 @@
-"""Group syscall spans into OpenTelemetry traces (Phase 10-3).
+"""Group syscall spans into OpenTelemetry traces (Phase 10-3/10-4).
 
 One trace per connection: a synthetic root span "connection" starts with
-the accept/accept4 that returned fd N and ends with the close(N) that
-returned 0. Its children are
+the accept/accept4 that returned fd N. Its children are
 
 - syscalls whose fd argument is N (recvfrom, writev, setsockopt, close,
   epoll_ctl's target fd, ...): attribution "fd";
@@ -12,12 +11,22 @@ returned 0. Its children are
   nginx handling one connection at a time per thread between two
   epoll_wait calls.
 
-Everything else goes into an "event-loop" trace, rolled over every
-`loop_window_spans` spans or `loop_window_ns` of guest time so a trace
-never grows without bound.
+The connection ends (root end time = the end of its last span) when
 
-Span times are passed explicitly (host nanoseconds converted from the
-guest clock by the caller). A syscall returning -errno gets status ERROR.
+- close(N) returns 0;
+- recvfrom(N) returns 0 (peer closed) or shutdown(N) returns 0: the
+  connection is marked closing, and ends at the close(N) that normally
+  follows, or at the next record of the same thread that is not about N.
+  This lets groups without close (NET) still end their traces;
+- nothing happened on it for `idle_ns` of guest time (default 30 s):
+  ended with vmitrace.incomplete = "idle timeout".
+
+Everything else goes into an "event-loop" trace, rolled over every
+`loop_window_spans` spans or `loop_window_ns` so a trace never grows
+without bound.
+
+Span times are passed explicitly (host ns converted by the caller). A
+syscall returning -errno gets status ERROR.
 """
 
 import errno as errno_mod
@@ -38,49 +47,73 @@ ACCEPT = ("accept", "accept4")
 # Returning from one of these means the thread goes back to the event loop.
 LOOP_WAIT = ("epoll_wait", "epoll_pwait", "epoll_pwait2", "poll", "ppoll",
              "select", "pselect6")
+F_ENTRY_ONLY = 1
 
 
 def errno_of(ret):
     return -ret if -4096 < ret < 0 else None
 
 
+class _Conn:
+    __slots__ = ("root", "tid", "last_end", "closing")
+
+    def __init__(self, root, tid, start_ns):
+        self.root = root
+        self.tid = tid
+        self.last_end = start_ns
+        self.closing = False
+
+
 class TraceBuilder:
     def __init__(self, tracer, loop_window_spans=200,
-                 loop_window_ns=10_000_000_000):
+                 loop_window_ns=10_000_000_000, idle_ns=30_000_000_000):
         self.tracer = tracer
         self.loop_window_spans = loop_window_spans
         self.loop_window_ns = loop_window_ns
-        self.conns = {}        # fd -> root span
+        self.idle_ns = idle_ns
+        self.conns = {}        # fd -> _Conn
         self.current = {}      # tid -> fd being handled (inferred attribution)
         self.loop_root = None
         self.loop_start = 0
         self.loop_spans = 0
         self.last_end = 0
-        self.stats = {"connections": 0, "conn_reused_fd": 0,
+        self.stats = {"connections": 0, "closed_by_close": 0,
+                      "closed_by_eof_or_shutdown": 0, "closed_idle": 0,
+                      "closed_fd_reused": 0, "closed_open_at_flush": 0,
                       "loop_traces": 0, "spans": 0}
 
-    # --- roots ---
+    # --- connection roots ---
+
+    def _end_conn(self, fd, why, incomplete=None):
+        c = self.conns.pop(fd)
+        if incomplete:
+            c.root.set_attribute("vmitrace.incomplete", incomplete)
+        c.root.set_attribute("vmitrace.close_reason", why)
+        c.root.end(end_time=c.last_end)
+        self.stats["closed_" + why] += 1
+        for tid, cur in list(self.current.items()):
+            if cur == fd:
+                self.current[tid] = None
 
     def _new_conn(self, fd, start_ns, rec):
-        old = self.conns.pop(fd, None)
-        if old is not None:              # close(fd) was lost
-            old.set_attribute("vmitrace.incomplete", "fd reused by accept")
-            old.end(end_time=start_ns)
-            self.stats["conn_reused_fd"] += 1
+        if fd in self.conns:                    # its close was not seen
+            self._end_conn(fd, "fd_reused", "fd reused by accept")
         root = self.tracer.start_span(
             "connection", context=Context(), kind=SpanKind.SERVER,
             start_time=start_ns,
             attributes={"net.sock.fd": fd, "vcpu": rec.lcpu, "tid": rec.tid})
-        self.conns[fd] = root
+        self.conns[fd] = _Conn(root, rec.tid, start_ns)
         self.stats["connections"] += 1
-        return root
+        return self.conns[fd]
 
-    def _end_conn(self, fd, end_ns):
-        root = self.conns.pop(fd)
-        root.end(end_time=end_ns)
-        for tid, cur in list(self.current.items()):
-            if cur == fd:
-                self.current[tid] = None
+    def _expire(self, now_ns, tid, fd_of_rec):
+        for fd, c in list(self.conns.items()):
+            if c.closing and c.tid == tid and fd != fd_of_rec:
+                self._end_conn(fd, "by_eof_or_shutdown")
+            elif now_ns - c.last_end >= self.idle_ns:
+                self._end_conn(fd, "idle", "idle timeout")
+
+    # --- event loop ---
 
     def _loop(self, start_ns):
         if (self.loop_root is not None
@@ -102,34 +135,34 @@ class TraceBuilder:
 
     def add(self, rec, name, start_ns, end_ns, args_hex):
         ret = rec.ret
+        entry_only = bool(rec.flags & F_ENTRY_ONLY)
         fd_idx = FD_ARG.get(name)
         fd = rec.args[fd_idx] if fd_idx is not None else None
-        attribution = None
-        close_fd = None
+        conn_fd = fd if fd in self.conns else None
+        if name in ACCEPT and not entry_only and ret >= 0:
+            conn_fd = None
+        self._expire(start_ns, rec.tid, conn_fd)
 
-        if name in ACCEPT and ret >= 0:
-            parent = self._new_conn(ret, start_ns, rec)
+        attribution = None
+        conn = None
+        if name in ACCEPT and not entry_only and ret >= 0:
+            conn = self._new_conn(ret, start_ns, rec)
             self.current[rec.tid] = ret
             attribution = "accept"
-        elif fd is not None and fd in self.conns:
-            parent = self.conns[fd]
-            self.current[rec.tid] = fd
+        elif conn_fd is not None and conn_fd in self.conns:
+            conn = self.conns[conn_fd]
             attribution = "fd"
-            if name == "close" and ret == 0:
-                close_fd = fd
+            self.current[rec.tid] = None if conn.closing else conn_fd
         elif name in LOOP_WAIT:
             self.current[rec.tid] = None
-            parent = self._loop(start_ns)
         elif self.current.get(rec.tid) in self.conns:
-            parent = self.conns[self.current[rec.tid]]
+            conn = self.conns[self.current[rec.tid]]
             attribution = "inferred"
-        else:
-            parent = self._loop(start_ns)
+        parent = conn.root if conn is not None else self._loop(start_ns)
 
         attrs = {"syscall.nr": rec.nr, "syscall.args": args_hex,
-                 "vcpu": rec.lcpu, "tid": rec.tid,
-                 "vmitrace.idx": rec.idx}
-        if rec.flags & 1:                         # VMITRACE_F_ENTRY_ONLY
+                 "vcpu": rec.lcpu, "tid": rec.tid, "vmitrace.idx": rec.idx}
+        if entry_only:
             attrs["vmitrace.no_return"] = True
         else:
             attrs["syscall.ret"] = ret
@@ -137,7 +170,7 @@ class TraceBuilder:
             attrs["vmitrace.attribution"] = attribution
         if rec.unselected:
             attrs["vmitrace.unselected_nr"] = True
-        err = errno_of(ret) if not rec.flags & 1 else None
+        err = None if entry_only else errno_of(ret)
         if err:
             attrs["syscall.errno"] = err
             attrs["syscall.errno_name"] = errno_mod.errorcode.get(err, "?")
@@ -151,16 +184,24 @@ class TraceBuilder:
         span.end(end_time=end_ns)
         self.stats["spans"] += 1
         self.last_end = max(self.last_end, end_ns)
-        if close_fd is not None:
-            self._end_conn(close_fd, end_ns)
+
+        if conn is not None:
+            conn.last_end = max(conn.last_end, end_ns)
+            if attribution == "fd" and not entry_only:
+                if name == "close" and ret == 0:
+                    self._end_conn(conn_fd, "by_close")
+                elif ((name == "recvfrom" and ret == 0)
+                      or (name == "shutdown" and ret == 0)):
+                    conn.closing = True
+                    self.current[rec.tid] = None
 
     def flush(self):
         """End every open root (collector exit / guest gone)."""
-        end = self.last_end
-        for fd in list(self.conns):
-            self.conns[fd].set_attribute("vmitrace.incomplete",
-                                         "open at collector exit")
-            self._end_conn(fd, end)
+        for fd, c in list(self.conns.items()):
+            if c.closing:
+                self._end_conn(fd, "by_eof_or_shutdown")
+            else:
+                self._end_conn(fd, "open_at_flush", "open at collector exit")
         if self.loop_root is not None:
-            self.loop_root.end(end_time=max(end, self.loop_start))
+            self.loop_root.end(end_time=max(self.last_end, self.loop_start))
             self.loop_root = None

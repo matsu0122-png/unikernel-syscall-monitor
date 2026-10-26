@@ -22,6 +22,7 @@
 
 #include <vmitrace/abi.h>
 #include "groups.h"
+#include "vmitrace_nonce.h"	/* generated, see Makefile.uk */
 
 #define VT_CAPACITY	(1UL << CONFIG_LIBVMITRACE_RING_ORDER)
 #define VT_NR_LCPU	CONFIG_UKPLAT_LCPU_MAXCOUNT
@@ -52,10 +53,15 @@ extern struct vmitrace_rec vmitrace_records[VT_NR_LCPU][VT_CAPACITY];
 #if CONFIG_LIBVMITRACE_GROUP_ALL
 #define VT_WORD(w)	(~0ULL)
 #else /* !CONFIG_LIBVMITRACE_GROUP_ALL */
-#if CONFIG_LIBVMITRACE_GROUP_NET
+#if CONFIG_LIBVMITRACE_GROUP_NET || CONFIG_LIBVMITRACE_GROUP_NETFD
 #define VT_NET(w)	VMITRACE_GROUP_NET(VT_BIT, w)
 #else
 #define VT_NET(w)
+#endif
+#if CONFIG_LIBVMITRACE_GROUP_NETFD
+#define VT_NETFD(w)	VMITRACE_GROUP_NETFD_EXTRA(VT_BIT, w)
+#else
+#define VT_NETFD(w)
 #endif
 #if CONFIG_LIBVMITRACE_GROUP_FILE
 #define VT_FILE(w)	VMITRACE_GROUP_FILE(VT_BIT, w)
@@ -67,7 +73,7 @@ extern struct vmitrace_rec vmitrace_records[VT_NR_LCPU][VT_CAPACITY];
 #else
 #define VT_TIME(w)
 #endif
-#define VT_WORD(w)	(0ULL VT_NET(w) VT_FILE(w) VT_TIME(w))
+#define VT_WORD(w)	(0ULL VT_NET(w) VT_NETFD(w) VT_FILE(w) VT_TIME(w))
 #endif /* !CONFIG_LIBVMITRACE_GROUP_ALL */
 
 __used __align64
@@ -86,6 +92,7 @@ const struct vmitrace_hdr vmitrace_hdr = {
 	.state_addr   = (__u64)(__uptr)vmitrace_state,
 	.records_addr = (__u64)(__uptr)vmitrace_records,
 	.bitmap_addr  = (__u64)(__uptr)vmitrace_bitmap,
+	.build_nonce  = { VMITRACE_BUILD_NONCE0, VMITRACE_BUILD_NONCE1 },
 };
 
 static __thread __u64 vt_enter_ts[VT_MAX_DEPTH];

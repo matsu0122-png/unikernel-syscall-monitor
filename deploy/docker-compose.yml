@@ -1,0 +1,22 @@
+# Jaeger for the vmitrace collector (Phase 10-4).
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   collector/.venv/bin/python collector/vmitrace_collector.py ... \
+#       --otel otlp --otlp-endpoint localhost:14317
+#   UI: http://localhost:26686  (service "vmitrace")
+#
+# Host ports are 14317 / 26686 instead of 4317 / 16686 because this host
+# already runs an unrelated otel-collector + Jaeger on those ports. Both
+# bind to 127.0.0.1 only: traces contain syscall arguments and should not
+# be reachable from the network. Storage is in-memory (lost on restart).
+name: vmitrace
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "100000"
+    ports:
+      - "127.0.0.1:14317:4317"     # OTLP gRPC
+      - "127.0.0.1:26686:16686"    # UI + query API
+    restart: unless-stopped

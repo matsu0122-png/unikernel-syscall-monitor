@@ -3,7 +3,7 @@
 Tracks what is still to do after each step, including requirements added
 while reviewing earlier steps. Results go into README as "Phase 10-x result".
 
-## 10-3 collector
+## 10-3 collector (done; README Phase 10-3 result and follow-ups)
 
 - Create group `vmitrace` (root: `groupadd vmitrace`, `usermod -aG vmitrace
   <qemu user>,<collector user>,<integrity user>`); wrapper already chgrps if
@@ -20,7 +20,7 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
 
 ## 10-4 Jaeger
 
-- `deploy/` docker compose; 3 curls visible as traces.
+- Done (see README Phase 10-4 result).
 
 ## 10-5 verification
 
@@ -38,6 +38,16 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
    (request rate / concurrency): measure the fraction of records lost to
    overwrite for a grid of these three, and report the capacity/poll
    interval needed for zero loss at the measured peak syscall rate.
+7. **(added after 10-3) NET vs NETFD**: same workload on both builds;
+   compare record count per request, throughput (as item 4), and trace
+   completeness: connections opened vs closed by `close` /
+   `eof_or_shutdown` / `idle` / `fd_reused` / `open_at_flush` (collector
+   `traces` stats), and the share of a request's syscalls that land in its
+   connection trace.
+8. **(added after 10-3) Every reported run includes the collector's
+   `offset_resets`** (and `offset_samples`, `offset_uncertainty_ns`) from
+   `--stats`. A non-zero `offset_resets` must be explained (clock drift or a
+   violated assumption) before that run's timestamps are used.
 
 ## 10-6 integrity
 

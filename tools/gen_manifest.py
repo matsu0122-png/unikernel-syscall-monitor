@@ -8,6 +8,7 @@ running guest:
   build_id        sha256 of the image QEMU boots (Unikraft's linker script
                   discards .note.gnu.build-id, so there is no GNU build-id)
   abi             header constants (magic, version, record_size, ...)
+  build_nonce     the header's per-build random value (ABI v2)
   expected        state_addr / records_addr / bitmap_addr as the header must
                   hold them, cross-checked against the ELF symbols
   ring            NOBITS storage: state array, records, sizes
@@ -40,7 +41,7 @@ from pathlib import Path
 
 MANIFEST_VERSION = 1
 VMITRACE_MAGIC = 0x4543415254494d56
-HDR_FMT = "<QIIIIQQQ"            # include/vmitrace/abi.h, struct vmitrace_hdr
+HDR_FMT = "<QIIIIQQQQQ"          # include/vmitrace/abi.h, struct vmitrace_hdr
 HDR_SIZE = 64
 STATE_SIZE = 64
 BITMAP_BYTES = 64
@@ -162,9 +163,14 @@ def build_manifest(dbg_path):
         sys.exit(f"vmitrace_hdr is {hdr_size} bytes, expected {HDR_SIZE}")
     hdr_bytes = elf.read(hdr_addr, HDR_SIZE)
     (magic, version, record_size, capacity, nr_lcpu, state_addr,
-     records_addr, bitmap_addr) = struct.unpack_from(HDR_FMT, hdr_bytes)
+     records_addr, bitmap_addr, nonce0, nonce1) = struct.unpack_from(
+        HDR_FMT, hdr_bytes)
     if magic != VMITRACE_MAGIC:
         sys.exit(f"bad magic {magic:#x} in image header")
+    if version != 2:
+        sys.exit(f"header version {version}, this generator supports 2")
+    if not (nonce0 or nonce1):
+        sys.exit("build_nonce is zero (nonce header not generated?)")
     if hdr_addr % PAGE:
         sys.exit(f"vmitrace_hdr at {hdr_addr:#x} is not page-aligned")
 
@@ -273,6 +279,7 @@ def build_manifest(dbg_path):
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         generator="tools/gen_manifest.py",
         build_id=sha256(kernel.read_bytes()),
+        build_nonce=[f"{nonce0:#018x}", f"{nonce1:#018x}"],
         image=dict(kernel=str(kernel), kernel_sha256=sha256(kernel.read_bytes()),
                    dbg=str(dbg_path), dbg_sha256=sha256(elf.data)),
         address_space=dict(

@@ -15,21 +15,18 @@ pidfile). The collector:
 3. polls every ring, validates each record (vmitrace_reader.py), and writes
    - JSONL compatible with the Phase 2-8 logs (ts, cpu, num, syscall,
      args, ret, err, dur_us; plus tid, idx), readable by validate_strace.py;
-   - OTel spans (traces.py), with guest times shifted by a host-guest
-     offset (decision 3: min of host - guest). A record is *fresh* if it
-     appeared between two consecutive successful polls: it was published
-     after the previous poll read write_idx (t_lo) and before this poll
-     finished reading (t_hi), so offset is in [t_lo - g, t_hi - g]. The
-     upper end is the "min(host - guest)" estimator; intersecting with the
-     lower ends bounds it from below too. The offset used is the middle of
-     the intersection, error <= half its width (reported in the stats). Records
+   - OTel spans (traces.py), with guest times shifted by the host-guest
+     offset from timesync.OffsetEstimator (fresh records only; see there).
+     Records
      already in the ring at start (or after a header mismatch) are held
      until the first fresh record anchors the offset; if none ever comes
      they are written at exit with "time_unanchored": true and an
      upper-bound offset;
-4. when QEMU's pidfile process is gone: final drain, flush, statistics,
-   and delete <name>.mem / <name>.json (decision 7). That needs write
-   permission on the directory; if it is missing, the failure is logged.
+4. when QEMU's pidfile process is gone: final drain, flush, statistics.
+   It does not delete <name>.mem / <name>.json: the directory is 0750 and
+   only the QEMU user may; tools/vmitrace-cleanup.sh (started by the
+   wrapper as that user) does it. The collector only logs whether they
+   are still there.
 
 The JSONL file is capped (--max-jsonl-mb): when it reaches the cap it is
 rotated to .1 (one generation), so disk use stays <= 2x the cap whatever the
@@ -50,6 +47,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))          # syscall_table.py
 
 from syscall_table import SYSCALL_TABLE  # noqa: E402
+from timesync import OffsetEstimator  # noqa: E402
 from vmitrace_reader import (F_ENTRY_ONLY, F_NO_ENTER_TS, GuestRing,  # noqa: E402
                              Manifest)
 
@@ -154,8 +152,6 @@ def main():
     ap.add_argument("--stats", help="write final statistics JSON here")
     ap.add_argument("--wait-s", type=float, default=60.0,
                     help="how long to wait for the file / a valid header")
-    ap.add_argument("--no-cleanup", action="store_true",
-                    help="do not delete the shared file after QEMU exits")
     args = ap.parse_args()
 
     man = Manifest(args.manifest)
@@ -210,8 +206,7 @@ def main():
         tb = TraceBuilder(tracer)
 
     out = CappedWriter(args.jsonl, int(args.max_jsonl_mb * 1024 * 1024))
-    offset = None            # anchored offset (fresh records only)
-    lo = hi = None           # intersection of [t_lo - g, t_hi - g]
+    est = OffsetEstimator()
     pending = []             # records seen before the offset was anchored
     max_pending = 4 * man.capacity * man.nr_lcpu
     stop = False
@@ -228,18 +223,9 @@ def main():
         return r.ts_enter_ns if r.flags & F_ENTRY_ONLY else r.ts_exit_ns
 
     def take(recs, fresh, t_lo, t_hi):
-        nonlocal offset, lo, hi
         if fresh and recs:
-            for r in recs:
-                g = guest_t(r)
-                rlo, rhi = t_lo - g, t_hi - g
-                if lo is None or max(lo, rlo) > min(hi, rhi):
-                    if lo is not None:     # inconsistent (clock drift): restart
-                        ring.counters["offset_resets"] += 1
-                    lo, hi = rlo, rhi
-                else:
-                    lo, hi = max(lo, rlo), min(hi, rhi)
-            offset = (lo + hi) // 2
+            est.update([guest_t(r) for r in recs], t_lo, t_hi)
+        offset = est.offset
         if offset is None:
             pending.extend(recs)
             if len(pending) > max_pending:
@@ -335,25 +321,25 @@ def main():
         "write_idx": [ring.write_idx(l) for l in range(man.nr_lcpu)],
         "dropped_guest": [ring.dropped(l) for l in range(man.nr_lcpu)],
         "capacity": man.capacity,
-        "offset_ns": offset,
-        "offset_anchored": offset is not None,
-        "offset_uncertainty_ns": (hi - lo) // 2 if lo is not None else None,
+        "offset_ns": est.offset,
+        "offset_anchored": est.offset is not None,
+        "offset_uncertainty_ns": est.uncertainty,
+        "offset_samples": est.samples,
+        "offset_resets": est.resets,
         "jsonl_rotations": out.rotations,
         "traces": tb.stats if tb is not None else None,
         "qemu_exited": qemu_gone,
     }
     ring.close()
 
-    if qemu_gone and meta and not args.no_cleanup:
-        for p in (meta["mem_path"], str(Path(args.shm_dir) / f"{args.instance}.json")):
-            try:
-                os.unlink(p)
-                log(f"removed {p}")
-            except FileNotFoundError:
-                pass
-            except PermissionError as e:
-                stats.setdefault("cleanup_errors", []).append(f"{p}: {e}")
-                log(f"cannot remove {p}: {e}")
+    if qemu_gone and meta:
+        # Deletion is vmitrace-cleanup.sh's job; just record what we see.
+        time.sleep(2)
+        left = [p for p in (meta["mem_path"],
+                            str(Path(args.shm_dir) / f"{args.instance}.json"))
+                if os.path.exists(p)]
+        stats["shared_files_left"] = left
+        log(f"QEMU exited; shared files still present: {left or 'none'}")
 
     log("stats " + json.dumps(stats))
     if args.stats:

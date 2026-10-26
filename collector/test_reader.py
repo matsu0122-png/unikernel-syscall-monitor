@@ -24,15 +24,23 @@ STATE, RECS = 0x10000, 0x10040
 CAP, NL = 8, 1
 SIZE = 0x20000
 MAGIC = 0x4543415254494d56
+NONCE = (0x1111222233334444, 0x5555666677778888)
 
 
 def header_bytes(**over):
-    f = dict(magic=MAGIC, version=1, record_size=96, capacity=CAP,
-             nr_lcpu=NL, state=STATE, records=RECS, bitmap=BM)
+    f = dict(magic=MAGIC, version=2, record_size=96, capacity=CAP,
+             nr_lcpu=NL, state=STATE, records=RECS, bitmap=BM, nonce=NONCE)
     f.update(over)
-    return struct.pack("<QIIIIQQQ", f["magic"], f["version"],
+    return struct.pack("<QIIIIQQQQQ", f["magic"], f["version"],
                        f["record_size"], f["capacity"], f["nr_lcpu"],
-                       f["state"], f["records"], f["bitmap"]) + bytes(16)
+                       f["state"], f["records"], f["bitmap"], *f["nonce"])
+
+
+def bitmap_bytes(selected):
+    words = [0] * 8
+    for n in selected:
+        words[n >> 6] |= 1 << (n & 63)
+    return struct.pack("<8Q", *words)
 
 
 class Fake:
@@ -44,16 +52,21 @@ class Fake:
         words = [0] * 8
         for n in selected:
             words[n >> 6] |= 1 << (n & 63)
+        self.bitmap = bitmap_bytes(selected)
         man = dict(
             manifest_version=1, build_id="x",
-            abi=dict(magic=MAGIC, version=1, record_size=96, capacity=CAP,
+            build_nonce=[f"{n:#018x}" for n in NONCE],
+            abi=dict(magic=MAGIC, version=2, record_size=96, capacity=CAP,
                      nr_lcpu=NL),
             expected=dict(header_addr=HDR, state_addr=STATE,
                           records_addr=RECS, bitmap_addr=BM),
             ring=dict(start=STATE, end=RECS + CAP * NL * 96,
                       state_addr=STATE, records_addr=RECS),
-            hash_regions=[dict(name="vmitrace_hdr",
-                               sha256=hashlib.sha256(header_bytes()).hexdigest())],
+            hash_regions=[
+                dict(name="vmitrace_hdr",
+                     sha256=hashlib.sha256(header_bytes()).hexdigest()),
+                dict(name="vmitrace_bitmap",
+                     sha256=hashlib.sha256(self.bitmap).hexdigest())],
             bitmap=dict(words=[f"{w:#018x}" for w in words],
                         syscalls=[dict(nr=n, name=f"s{n}") for n in selected]))
         self.man_path = os.path.join(tmp, "manifest.json")
@@ -62,8 +75,11 @@ class Fake:
     def put(self, off, data):
         os.pwrite(self.fd, data, off)
 
-    def header(self, **over):
+    def header(self, bitmap=True, **over):
+        """Header (and, by default, the expected bitmap) as loaded."""
         self.put(HDR, header_bytes(**over))
+        if bitmap:
+            self.put(BM, self.bitmap)
 
     def widx(self, v):
         self.put(STATE, struct.pack("<Q", v))
@@ -95,13 +111,23 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(r.header_status(), "ok")
         self.g.header(records=RECS + 96)            # guest moved its ring
         self.assertIn("records_addr", r.header_status())
+        self.g.header(nonce=(1, 2))                 # same layout, other build
+        self.assertIn("build_nonce[0]", r.header_status())
         self.g.header()
-        self.g.put(HDR + 60, b"\x01")               # reserved byte
-        self.assertIn("reserved", r.header_status())
+        self.g.put(BM, b"\xff")                     # bitmap tampered
+        self.assertEqual(r.header_status(), "bitmap mismatch")
+        self.g.header()
+        self.assertEqual(r.header_status(), "ok")
+
+    def test_bitmap_not_loaded_is_not_ok(self):
+        r = self.g.ring()
+        self.g.header(bitmap=False)
+        self.assertEqual(r.header_status(), "bitmap mismatch")
 
     def test_maps_only_header_page_and_ring(self):
         r = self.g.ring()
-        self.assertEqual(r.mapped, [(HDR, 0x1000), (STATE, 0x1000)])
+        self.assertEqual(r.mapped, [(HDR, 0x1000), (BM, 0x1000),
+                                    (STATE, 0x1000)])
 
     def test_valid_and_incremental(self):
         self.g.header()

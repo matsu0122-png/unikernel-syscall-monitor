@@ -24,7 +24,11 @@
 #      chgrp fails). QEMU opens the existing file and sizes it, keeping
 #      owner, group and mode. Write <name>.json (mem path, size, pidfile,
 #      monitor socket, kernel) for the collector, same mode and group.
-#   6. exec QEMU with
+#   6. Start tools/vmitrace-cleanup.sh detached (setsid, stdio /dev/null,
+#      same user): it waits for this QEMU to exit (pidfile + cmdline match)
+#      and deletes <name>.mem / <name>.json. Without -pidfile there is
+#      nothing to wait on, so no cleanup process is started.
+#   7. exec QEMU with
 #        -object memory-backend-file,id=vmitrace-mem,size=S,mem-path=F,share=on
 #        -machine memory-backend=vmitrace-mem
 #
@@ -40,6 +44,7 @@
 
 set -eu
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 QEMU=${VMITRACE_QEMU:-/usr/bin/qemu-system-x86_64}
 SHM_DIR=${VMITRACE_SHM_DIR:-/dev/shm/vmitrace}
 GROUP=${VMITRACE_GROUP:-vmitrace}
@@ -139,7 +144,16 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 chmod 0640 "$meta"
 chgrp "$GROUP" "$meta"
 
-# 6. exec (no extra process). kraftkit passes -daemonize, so QEMU forks and
+# 6. detached cleanup process (decision 7, revised before 10-4)
+if [ -n "$pidfile" ]; then
+	setsid "$HERE/vmitrace-cleanup.sh" \
+		"$mem" "$(stat -c %i "$mem")" "$meta" "$(stat -c %i "$meta")" \
+		"$pidfile" $$ </dev/null >/dev/null 2>&1 &
+else
+	log "no -pidfile in argv; $mem will not be cleaned up after exit"
+fi
+
+# 7. exec. kraftkit passes -daemonize, so QEMU forks and
 # the running VM's pid is the one in -pidfile, not wrapper_pid above.
 exec "$QEMU" "$@" \
 	-object "memory-backend-file,id=vmitrace-mem,size=${mib}M,mem-path=$mem,share=on" \

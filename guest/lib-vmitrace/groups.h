@@ -20,6 +20,14 @@
 	X(setsockopt, a) X(getsockopt, a) X(shutdown, a)				\
 	X(getpeername, a) X(getsockname, a) X(socketpair, a)
 
+/* NETFD = NET + these: the fd lifecycle and data syscalls of a connection,
+ * so a host can see where each connection ends (close) and what moved
+ * over it. Overlaps FILE for read/write/readv/writev/close.
+ */
+#define VMITRACE_GROUP_NETFD_EXTRA(X, a)					\
+	X(close, a) X(read, a) X(write, a) X(readv, a) X(writev, a)		\
+	X(epoll_ctl, a)
+
 #define VMITRACE_GROUP_FILE(X, a)						\
 	X(read, a) X(write, a) X(open, a) X(openat, a) X(close, a)			\
 	X(stat, a) X(fstat, a) X(lstat, a) X(newfstatat, a) X(statx, a)		\
