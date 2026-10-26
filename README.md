@@ -20,6 +20,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-0 (investigation for an unmodified-QEMU design): done, no code yet.** See below and `docs/phase10_0_investigation.md`. Unikraft's own `uk_syscall_entertab_prio`/`uk_syscall_exittab_prio` hooks plus a distro-QEMU `memory-backend-file,share=on` give a host-readable view of guest RAM in which symbol address = file offset. Open design questions are listed before implementation starts.
 - **Phase 10-1 (guest library `guest/lib-vmitrace`): done, smoke-tested.** See below and `docs/phase10_1_guest_library.md`. Records selected binary syscalls from syscall_shim's enter/exit hooks into a guest-RAM ring (no VM exit, overwrite when full), built from pinned local copies of Unikraft/lwip/libelf/elfloader with `tools/guest_build.py`. On the distro QEMU the ALL build's records start at `brk` and the per-request sequence and return values match Phase 8; the NET build records only the 16 NET syscalls.
 - **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`. Follow-ups before 10-3: `_ukplat_syscall` added as the 9th hash region (range found by disassembly), shared files moved to `/dev/shm/vmitrace/`, and security-model limits written down.
+- **Phase 10-3 (collector): done, tested as a single user.** See below. `collector/vmitrace_collector.py` maps only the header page and the ring range read-only, refuses to read while the guest header differs from the manifest, validates every record, and writes Phase-8-compatible JSONL (`validate_strace.py`: full match) plus OTel spans grouped into one trace per connection. Timestamps land within about +-1.5 ms of host time at 10 ms polling. The `vmitrace` group and separate users need root: commands are listed in the 10-3 section, not run.
 
 ## Phase 1 result
 
@@ -983,6 +984,165 @@ the distro QEMU. Also moved the Phase 1-9 code to `legacy/`.
 - The page-table exclusion is by symbol. The one boot relocation found in
   10-0 (`lcpu_start32`, 0x100069) is not in any hash region, so it is not
   listed.
+
+## Phase 10-3 result
+
+Goal: the host-side reader. It turns the guest ring into the legacy JSONL
+and into OpenTelemetry spans, without trusting anything the guest wrote.
+
+**Files**:
+
+- `collector/vmitrace_reader.py`: mapping, header check and record
+  validation. Standard library only (reused by 10-6).
+- `collector/traces.py`: grouping into traces.
+- `collector/vmitrace_collector.py`: CLI.
+- `collector/file_exporter.py`: `--otel file`, JSON-lines spans.
+- `collector/test_reader.py`: unit tests.
+- `collector/requirements.txt`: pinned venv. OpenTelemetry 1.45.1 /
+  exporter-otlp-proto-grpc, in `collector/.venv`, which is not committed.
+
+```
+/usr/bin/python3 -m venv collector/.venv
+collector/.venv/bin/pip install -r collector/requirements.txt
+collector/.venv/bin/python collector/vmitrace_collector.py \
+    --manifest <build>/manifest.json --instance <name> --jsonl out.jsonl \
+    [--otel otlp|file|none] [--poll-ms 10] [--max-jsonl-mb 256]
+```
+
+**What it does**:
+
+- **Mapping**: `O_RDONLY`, `PROT_READ`, `MAP_SHARED`, no root. Only two
+  windows are mapped: the page holding the 64-byte header
+  (`0xf3c000+0x1000`) and the ring range (`0xf8c000+0x61000`). The header
+  page is also needed to check the header, a small and deliberate addition
+  to "ring range only".
+- **Header**: records are read only while the guest's 64 header bytes have
+  the manifest's sha256. On mismatch it names the differing fields and
+  pauses. All addresses and sizes come from the manifest, never from the
+  guest.
+- **Records**:
+  - seq checked before and after the copy (`seq == idx + 1` three times).
+  - `nr < 512`; `lcpu` equals the ring's lcpu; only known flags.
+  - `ts_enter <= ts_exit`. With `NO_ENTER_TS`, `ts_enter == 0`.
+    `ENTRY_ONLY` only for `exit`/`exit_group`, with `ts_exit == ret == 0`.
+  - `write_idx` must not go backwards or jump implausibly.
+  - Each reject is counted under its own name and never emitted.
+  - A valid record for a syscall the manifest bitmap does not select is
+    kept, marked `unselected_nr`, and counted.
+- **Loss**: overwrite loss is counted on the host
+  (`write_idx - capacity` past the read position, or a lapped slot). The
+  guest's `dropped` is reported as-is (always 0 in ABI v1).
+- **Time (decision 3)**: a record that appears between two consecutive
+  polls was published after the previous poll read `write_idx` and before
+  this poll finished. So host-guest offset is in
+  `[t_prev - g, t_now - g]`. The upper ends give the decided
+  "min(host - guest)". Intersecting with the lower ends also bounds it from
+  below, and the middle is used. Records already in the ring when the
+  collector starts carry no timing information and are held until the
+  first fresh record. If none ever comes, they are written at exit with
+  `time_unanchored: true` and an upper-bound offset.
+- **JSONL**: `ts, cpu, num, syscall, args, ret, err, dur_us`, as in Phase
+  8, plus `tid` and `idx`. The legacy `rip` is not available.
+  - Names: `syscall_table.py` first, then the build's `syscall_nrs.h`
+    names from the manifest. This fixes the old `syscall_N` gaps: 206
+    `io_setup`, 273 `set_robust_list`, 334 `rseq`.
+  - `exit`/`exit_group`: `ret: null, unfinished: "no_return"`.
+  - Capped at `--max-jsonl-mb` with one `.1` rotation, so disk use stays
+    <= 2x the cap.
+- **OTel**:
+  - Span name = syscall. Explicit start/end from the converted guest
+    times.
+  - Attributes `syscall.nr/args/ret/errno` (+ `errno_name`), `vcpu`, `tid`.
+  - Status ERROR for -errno.
+  - Resource: `service.name=vmitrace`, instance, build_id.
+  - Traces: a `connection` root runs from the accept4 that returned fd N
+    to `close(N) = 0`. Children are syscalls on fd N (`attribution=fd`) and,
+    on the same thread until the next epoll_wait, syscalls without an fd
+    argument (`attribution=inferred`, e.g. `openat/newfstatat/pread64` of
+    the served file; a heuristic).
+  - Everything else goes to rolling `event-loop` traces (200 spans or
+    10 s each).
+- **Lifecycle**:
+  - Waits for the wrapper's `<name>.json`, the file at full size and a
+    matching header, so it can start before QEMU.
+  - Watches the pidfile pid. On exit: final drain (the mapping outlives
+    the file), flush, stats, then deletes `<name>.mem` and `<name>.json`
+    (decision 7).
+
+**Confirmed** (ALL build, distro QEMU through `tools/qemu-wrapper.sh`,
+single user):
+
+- End to end, with the collector started before `kraft run`:
+  - 341 records from `brk`, 0 rejects, 3 connection traces for 3 curls.
+  - Offset uncertainty 0.4 ms.
+  - On `kraft stop`: QEMU exit detected, then both files removed.
+- `validate_strace.py --vmi <collector jsonl>`: "full coverage match"
+  against `logs/strace_ground_truth.log`. Names only; the offset-0 check is
+  10-5.
+- A connection trace contains `accept4 = 7, epoll_ctl, recvfrom = 78,
+  pread64 = 612 (inferred), writev = 850, setsockopt, recvfrom = 0,
+  close`. 84 spans with -errno (`access`/`openat` ENOENT ...) have status
+  ERROR.
+- Timestamp accuracy: in 3 runs of 10 curls, `accept4.ts - curl start` was
+  -1.5..+4.1, +0.5..+1.8 and +0.3..+1.6 ms (curl itself took 0.7-7 ms).
+  - The first version used only "min(host - guest)" and assigned the
+    initial backlog its offset. It was off by up to 16.7 ms within a run,
+    and by **32 s between runs**, because idle nginx blocks in
+    `epoll_wait` and the newest backlog record can be old. Fixed by the
+    fresh-record rule above.
+- `collector/test_reader.py`: 8/8 pass (synthetic guest file).
+  - Covered: header states, mapped windows, incremental reads, overwrite
+    loss, torn seq, each invalid-field class, entry-only, no-enter-ts,
+    write_idx regress/jump, short file.
+
+**Found, needs a decision**:
+
+1. **The header does not identify the build.** The ALL and NET builds have
+   byte-identical headers (same addresses and constants). With the NET
+   manifest against an ALL guest, the header check passed and the only
+   symptom was `unselected_nr = 355`. Options:
+   - (a) add a per-build random nonce to the header's reserved bytes
+     (guest change, small);
+   - (b) also map the bitmap page and check its hash;
+   - (c) leave it to 10-6 (the integrity checker hashes everything).
+2. **Decision 7 vs the 0750 directory**: deleting a file needs write
+   permission on `/dev/shm/vmitrace/`. A collector running as another user
+   in group `vmitrace` gets `EACCES`. The code handles that (logs it, puts
+   it in `cleanup_errors`); it was tested only as the QEMU user. Options:
+   - run the collector as the QEMU user;
+   - make the directory `0770`, which lets group members create/delete
+     files (weaker);
+   - leave deletion to the wrapper's next start, or to a small cleanup run
+     as the QEMU user.
+
+**Not done / limits**:
+
+- OTLP gRPC export to a real receiver: comes with Jaeger in 10-4. Only
+  `--otel file` was exercised.
+- Separate users: not tested (root needed, below).
+- `exit`/`exit_group` and blocked-at-shutdown syscalls: the nginx workload
+  never calls `exit_group` (`kraft stop` powers the VM off), so the
+  entry-only path is tested only synthetically.
+- Clock drift between guest TSC time and host `CLOCK_REALTIME`: handled
+  only by restarting the offset intersection if it becomes empty
+  (`offset_resets`). Not measured over long runs.
+
+**Root-only setup, not executed** (decision 4; adjust user names):
+
+```
+sudo groupadd vmitrace
+sudo usermod -aG vmitrace matsu              # QEMU user (owns the files)
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+     --groups vmitrace vmitrace-collector
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+     --groups vmitrace vmitrace-integrity
+# optional: recreate the private directory at boot instead of the wrapper
+echo 'd /dev/shm/vmitrace 0750 matsu vmitrace -' | \
+     sudo tee /etc/tmpfiles.d/vmitrace.conf
+```
+
+After `usermod`, the QEMU user must log in again (or `newgrp vmitrace`)
+before the wrapper can `chgrp`.
 
 ## Notes for later phases
 
