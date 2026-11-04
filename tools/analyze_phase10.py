@@ -26,8 +26,8 @@ import csv
 import statistics as stt
 from collections import defaultdict
 
-ORDER = ["plain", "base", "net-i", "net-ii", "netfd-i", "netfd-ii", "all-i", "all-ii",
-         "legacy-p8", "legacy-c1"]
+ORDER = ["plain", "base", "net-i", "net-ii", "netfd-i", "netfd-ii", "netfd14-i",
+         "netfd14-ii", "all-i", "all-ii", "all14-i", "all14-ii", "legacy-p8", "legacy-c1"]
 REQS = 350          # overridden by --reqs (warmup + measured requests)
 
 
@@ -217,7 +217,7 @@ def collector(path):
             f"| {c} | {rs[0].get('output')} | {sum(num(r['lost']) == 0 for r in rs)}/{len(rs)} | "
             f"{fmt(total, 0)} | {fmt(lost, 0)} | {fmt(100 * lost / total, 2)}% | "
             f"{fmt(mean_sd([num(r['collector_cpu_s']) for r in rs])[0], 2)} | "
-            f"{fmt(max(num(r['collector_maxrss_kb']) for r in rs) / 1024, 1)} | "
+            f"{fmt(max(num(r.get('vmhwm_kb') or r['collector_maxrss_kb']) for r in rs) / 1024, 1)} | "
             f"{fmt(mean_sd([num(r['reader_cpu_s']) for r in rs])[0], 3)} | "
             f"{fmt(mean_sd([num(r['writer_cpu_s']) for r in rs])[0], 3)} | "
             f"{fmt(max(num(r['peak_unread']) for r in rs), 0)} | "

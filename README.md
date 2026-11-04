@@ -24,7 +24,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
 - **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size. A supplementary run with the `performance` governor and unrelated containers stopped (section 7) gives the final cost figures: ALL with nobody reading +0.13 +/- 0.26 us per syscall, legacy Phase 8 103.8 us. The earlier "(ii) faster than base" result did not appear there, and Jaeger received every span the collector generated.
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
-- **Phase 10-7 (collector speed-up): zero-loss goal met, time offset not solved.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at 3,722 of 4,096 unread records, so the margin is thin. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The 60 s time-offset window only reduced `offset_resets` from 37 to 24 in one hour. The default group is now NETFD.
+- **Phase 10-7 (collector speed-up, time offset): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the margin is thin; raising the ring to 16,384 is measured and awaits a decision. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset now fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). The default group is NETFD.
 
 ## Phase 1 result
 
@@ -1776,7 +1776,8 @@ plan) was not needed.
   much host memory is used. After a poll that read over 1/8 of the ring, the reader
   sleeps 1 ms instead of 10 ms. The `BatchSpanProcessor` queue went from 2,048 to
   65,536 spans.
-- **Time offset** (`--offset-window-s`, default 60): see below.
+- **Time offset** (`--offset-mode line`, the default): see below. The window method
+  stays available (`--offset-mode window`, `--offset-window-s`).
 - **Default group: NETFD** (`Config.uk`). A build with no group set selects the 22
   NETFD syscalls (checked with `guest_build.py build default`).
   `tools/guest_build.py` now switches NET and NETFD off explicitly for other groups.
@@ -1821,21 +1822,27 @@ CSVs: `logs/bench_p10_7_step1.csv`, `logs/bench_p10_7_step2.csv`,
 | condition | code | trials with no loss | records | lost | loss % | collector CPU s per trial | max RSS MiB | peak unread (of 4,096) | max poll gap ms | Jaeger missing |
 |---|---|---|---|---|---|---|---|---|---|---|
 | netfd-ii | 10-5 | 2/10 | 67,978 | 7,696 | 11.3% | 0.91 | not recorded | not recorded | not recorded | 0 |
-| netfd-ii | step 1 | 1/10 | 67,990 | 5,360 | 7.88% | 0.89 | 70.0 | 4,096 | 200.2 | 0 |
-| netfd-ii | step 2 | **10/10** | 67,982 | **0** | **0%** | 0.97 | 61.0 | 2,716 | 32.9 | 0 |
+| netfd-ii | step 1 | 1/10 | 67,990 | 5,360 | 7.88% | 0.89 | 69.7 | 4,096 | 200.2 | 0 |
+| netfd-ii | step 2 | **10/10** | 67,982 | **0** | **0%** | 0.97 | 54.8 | 2,716 | 32.9 | 0 |
 | all-ii | 10-5 | 0/10 | 142,618 | 74,163 | 52.0% | 0.95 | not recorded | not recorded | not recorded | 0 |
-| all-ii | step 1 | 0/10 | 141,010 | 55,524 | 39.4% | 1.10 | 74.8 | 4,096 | 134.0 | 0 |
-| all-ii | step 2 | **10/10** | 141,160 | **0** | **0%** | 1.72 | 61.6 | 3,722 | 28.2 | 0 |
+| all-ii | step 1 | 0/10 | 141,010 | 55,524 | 39.4% | 1.10 | 74.1 | 4,096 | 134.0 | 0 |
+| all-ii | step 2 | **10/10** | 141,160 | **0** | **0%** | 1.72 | 61.8 | 3,722 | 28.2 | 0 |
 
+- **Correction to the RSS column:** it first came from `ru_maxrss`, which also
+  counts the high-water mark of the process that started the collector (it survives
+  exec), so it grew with the benchmark's own memory. The values above are `VmHWM`
+  from the collector itself, from 3 separate trials per condition, and the
+  `collector_maxrss_kb` column of the step CSVs should not be used.
 - CPU in step 2 is for about twice as many records as 10-5 in ALL. Of the 1.72 s,
   the reader thread used 0.14 s and the output thread 0.76 s; the rest is other
   threads (mainly the exporter, not measured separately). Both figures include
   startup: a short NETFD smoke trial with 70 requests used 0.20 s in total.
 - Span counts in Jaeger equal the generated counts in all 40 (ii) trials, without
   a queue-full message. Generated in step 2: NETFD 81,495, ALL 154,969.
-- **The margin is thin for ALL**: the ring peaked at 3,722 of 4,096 (91%), and the
-  worst poll gap (28.2 ms) is about the time the ring takes to fill at the peak
-  rate. Zero loss in 20 trials does not prove it cannot happen.
+- **The margin is thin for ALL**: the ring peaked at 3,722 of 4,096 (91%), and 4,029
+  (98%) in a later trial. The worst poll gap (28.2 ms) is about the time the ring
+  takes to fill at the peak rate. Zero loss in these trials does not prove it cannot
+  happen. See "Ring size" below.
 
 ### Cost with every record processed
 
@@ -1856,31 +1863,140 @@ much, is within the noise (netfd-ii had one low trial, 12,990 req/s, and an sd o
 session: netfd-i +0.14 +/- 0.33 and all-i +0.05 +/- 0.25 us/syscall, both CIs
 including zero.
 
-### Time offset: not solved by the 60 s window
+### Time offset: a line against the raw host clock
 
-`longrun`: one NETFD instance, one request per 3 s for 3,602 s (1,194 requests, 0
-failed, 8,405 records), read by two collectors at once, `--otel none`:
+**Result: the guest clock runs at a constant rate against `CLOCK_MONOTONIC_RAW`, and
+the nonlinearity first seen came from the host's wall clock.** `--offset-mode line`
+is now the default.
 
-| offset from | `offset_resets` | offset change over the run | final uncertainty | collector CPU s | max RSS MiB |
+The first one-hour run (60 s window) had taken `offset_resets` only from 37 to 24.
+Its offset history did not lie on a line either, with residuals up to 10 ms and a
+change of slope near 3,000 s. The host runs `systemd-timesyncd`, which adjusts the
+wall clock, so both clocks were then logged for every poll (`--offset-log`,
+`tools/analyze_offset.py`).
+
+**Is it a line?** Two boots, one hour each, one request per 3 s, about 1,200 polls with
+records. "Exact fit" asks whether one line passes through the interval
+`[t_lo - g, t_hi - g]` of every poll, with no margin:
+
+| | boot A, raw | boot A, wall | boot B, raw | boot B, wall |
+|---|---|---|---|---|
+| rate, ppm | **32.868** | 27.808 | **16.810** | 6.671 |
+| exact fit | **yes**, room 51 us | no, misses by 2.5 ms each way | **yes**, room 29 us | no, misses by 4.3 ms each way |
+| least squares on per-minute lowest upper bound: residual rms / max, ms | 1.3 / 5.0 | 2.1 / 4.6 | 1.9 / 5.5 | 3.9 / 8.4 |
+| wall minus raw over the hour | | -18.12 ms | | -31.80 ms |
+
+The least-squares residuals mostly show sampling noise: a per-minute minimum comes
+from only about 20 polls, each up to 10 ms wide. The exact fit is the stronger test.
+
+Lowest upper bound per 5 minutes, above the best line of that column's clock (ms).
+Against the raw clock the values vary with where polls happen to fall, up to 1.9 ms.
+Against the wall clock they follow a slow curve up to 9 ms:
+
+| minutes | boot A, raw | boot A, wall | boot B, raw | boot B, wall |
+|---|---|---|---|---|
+| 0-5 | +395.5 | +5828.2 | +894.7 | +5596.4 |
+| 5-10 | +143.0 | +4133.1 | +72.4 | +7914.4 |
+| 10-15 | +177.4 | +3748.6 | +206.1 | +8958.6 |
+| 15-20 | +272.1 | +3634.2 | +92.8 | +4003.3 |
+| 20-25 | +838.0 | +3870.1 | +373.2 | +1421.1 |
+| 25-30 | +160.3 | +2620.1 | +18.8 | +297.2 |
+| 30-35 | +888.9 | +2008.3 | +1924.0 | +1700.7 |
+| 35-40 | +0.0 | +748.2 | +188.4 | +0.0 |
+| 40-45 | +200.8 | +0.0 | +68.1 | +133.9 |
+| 45-50 | +839.8 | +524.7 | +381.0 | +1309.4 |
+| 50-55 | +68.6 | +4438.2 | +0.0 | +4032.9 |
+| 55-60 | +840.9 | +5921.4 | +8.6 | +7816.0 |
+
+The rate differs between the two boots (32.9 and 16.8 ppm), as expected if it comes
+from the guest calibrating its TSC at boot (`plat/kvm/x86/tscclock.c` calibrates
+against the PIT). **The cause itself is not proven**: only constancy within a boot and
+the difference between two boots were measured.
+
+**Method.** Each 10 s bucket keeps its tightest upper and lower bound, for up to 2
+hours. Among the lines passing between them, the one with the most room is used.
+This replaces the planned least-squares fit on the upper bounds, whose slope was too
+noisy (48 resets on synthetic data with no drift at all). The wall clock is added at
+each use, so NTP adjustments reach the timestamps immediately. The slope is held
+for the first 60 s. If no line fits, old buckets are retired (`offset_trims`), and
+`offset_resets` counts only what no line through the last 60 s can explain. In this
+mode `offset_ns` in the stats is against the raw clock. Worst update on synthetic data:
+1.7 ms, about every 10 s.
+
+**Comparison.** Four collectors on one guest, 3,601 s, 1,194 requests, 0 failed,
+`--otel none`, final code (boot B). Error is from the exact line of that run plus the
+wall clock, replayed on the same polls. It favours the line method because the
+reference is a line, so the last column is the independent check: the estimated time
+of each `accept4` against the host's own time just before and after that `curl` (a
+window of about 4.3 ms). Being outside it is an error of at least that amount.
+
+| method | `offset_resets` | error rms, us | error max, us | after 5 min: rms / max, us | `accept4` outside the curl window | after 5 min: outside / worst, us |
+|---|---|---|---|---|---|---|
+| window 60 s | 2 | 820 | 5,004 | 833 / 5,004 | 260/1,194 | 229/1,094, 4,010 |
+| window 20 s | 0 | 960 | 5,044 | 952 / 5,044 | 473/1,194 | 415/1,094, 2,292 |
+| all data (as up to 10-6) | 16 | 1,219 | 5,082 | 1,235 / 5,082 | 280/1,194 | 262/1,094, 4,207 |
+| **line** | **0** | 826 | 6,167 | **220 / 991** | 141/1,194 | **65/1,094, 432** |
+
+| `offset_resets` per hour | window 60 s | window 20 s | all data | line |
+|---|---|---|---|---|
+| first run (no 20 s or line collector) | 24 | - | 37 | - |
+| boot A (line before the last fixes) | 6 | 1 | 21 | 0 |
+| boot B (final code) | 2 | 0 | 16 | 0 |
+
+- Reset counts of the window methods vary a lot between runs, with what NTP does in
+  that hour. **A 20 s window has few resets but is not more accurate**: it keeps less
+  data, and was the worst in the curl check.
+- **The line method is worst in its first minutes** (6.2 ms maximum). The slope comes
+  from too little data then, so about the first 5 minutes after boot are less accurate.
+- 65 requests after 5 minutes remain outside the curl window, by up to 432 us, all on
+  the late side. This was not investigated further.
+- The run depends on the rate staying constant; only one hour per boot was measured.
+
+**Lower margin and the unexplained reset.** The reset in a short trial occurred again
+(1 of 40 trials, netfd-ii, window mode, no margin). Replaying the logged polls:
+
+| lower margin, us | 0 | 100 | 200 | 500 | 1,000 | 2,000 |
+|---|---|---|---|---|---|---|
+| resets, window 60 s | 1 | 0 | 0 | 0 | 0 | 0 |
+| resets, line | 0 | 0 | 0 | 0 | 0 | 0 |
+
+A lower bound sat 2.4 us above the upper bound at that moment, and 36 us above the
+lowest upper bound in the trial. So **100 us was enough here**, and the default is
+500 us as an allowance for larger pauses. A timestamp older than `t_lo` by a few us
+fits a vCPU pause or just the hook's own run time; **which one was not determined**.
+The margin does not move the estimate. In live line mode, none of the 40 (ii) trials
+of the ring comparison had a reset. This also fits the 4 resets in the 10-6 run, which
+was not measured.
+
+### Ring size: 16,384 records (order 14), not changed yet
+
+10 rounds, alternated, line mode, same session:
+
+| condition | ring | trials with no loss | peak unread (share of ring) | added us/syscall | us/request vs base (95% CI) |
 |---|---|---|---|---|---|
-| last 60 s | **24** | 92.1 ms | 545 us | 14.4 | 17.9 |
-| all data (as up to 10-6) | **37** | 91.7 ms | 497 us | 14.8 | 17.6 |
+| netfd-i | 4,096 | | | +0.10 +/- 0.14 | +1.03 (-0.61 to 2.66) |
+| netfd14-i | 16,384 | | | +0.21 +/- 0.23 | +2.19 (0.17 to 4.21) |
+| netfd-ii | 4,096 | 10/10 | 2,365 (58%) | +0.45 +/- 0.26 | +4.65 (2.69 to 6.62) |
+| netfd14-ii | 16,384 | 10/10 | 1,983 (12%) | +0.38 +/- 0.39 | +3.91 (0.48 to 7.33) |
+| all-i | 4,096 | | | +0.13 +/- 0.20 | +1.31 (-0.70 to 3.32) |
+| all14-i | 16,384 | | | +0.13 +/- 0.21 | +1.39 (-0.43 to 3.20) |
+| all-ii | 4,096 | 10/10 | 3,049 (74%) | +0.49 +/- 0.30 | +5.17 (2.67 to 7.67) |
+| all14-ii | 16,384 | 10/10 | 3,940 (24%) | +0.53 +/- 0.29 | +5.40 (3.29 to 7.50) |
 
-- **Cause: clock drift, about 26 ppm** between guest and host in this run, or 1.5 ms
-  per 60 s. The intersection is usually under 1 ms wide, so even 60 s of drift
-  moves the offset out of it. This also fits the 4 resets of the 10-6 live run, but
-  that run was not measured for drift.
-- **A window of 60 s is too long for this drift.** The unit test with simulated
-  drift showed 0 resets because its polls had 10 ms intervals and no narrowing;
-  the real run did not behave that way. Roughly 0.5 ms / 26 ppm suggests about 20 s
-  or less (**estimate**, not measured). Fitting the drift would be the alternative.
-- A reset is not an error: the estimator restarts from the newest interval, and
-  both collectors tracked the same drift within 0.4 ms over the hour. Two records
-  either side of a reset can be off from each other by the size of the jump; that
-  size was not measured.
-- **1 reset in a short trial is unexplained** (step 2 netfd-ii round 2, 1 of 20,
-  drift cannot cause it in a few seconds). No result here uses that trial's
-  timestamps, and plan item 8 requires an explanation before they are used.
+- **Guest memory:** `.bss` grows by 1,179,648 bytes (1.125 MiB, from 384 KiB to 1,536
+  KiB per lcpu), which is 1.76% of the 64 MiB guest. The image file stays the same size
+  (15,015,632 bytes): the ring is NOBITS.
+- **Time to fill** at 160,000 records/s: 102 ms instead of 26 ms.
+- **Guest cost:** no difference that these intervals can resolve.
+- **Requests per instance:** no difference: both reached the test's limit of 3,000
+  requests in 100-request steps, 3 of 3 instances each.
+- Collector memory (`VmHWM`, 3 trials each): ALL 59.9-61.8 MiB to 62.1-62.3 MiB, NETFD
+  54.6-54.8 to 54.8-55.6 MiB.
+- It also holds more unread guest data in RAM, but all of guest RAM is exposed to
+  readers of the shared file anyway (see the security model).
+
+**Recommendation: raise the default to 14.** Whoever approves it should weigh 1.125 MiB
+per lcpu against a ring that is otherwise up to 98% full. Not changed yet.
 
 ### Limits
 
@@ -1893,13 +2009,18 @@ failed, 8,405 records), read by two collectors at once, `--otel none`:
 - **The reader has limits too (simulated guest, no OTel):** 150,000 records/s for
   100,000 records lost 3.89% to overwrite. In 14,000-record bursts with OTLP, there
   was no loss up to 300,000 records/s, and 12.66% in 1 of 3 runs at 400,000.
-- **Why sustained limits come only from the simulated guest:** this nginx build
-  falls over at about 1,500 requests per instance (known issue, see Phase 10-5), so
-  the real guest cannot sustain load for longer than these bursts. The simulated
-  guest follows the same record protocol but is not a real workload, so these
-  numbers locate the limit and are not results for nginx.
+- **Why sustained limits come only from the simulated guest:** nginx stops the load
+  early. The earlier phases recorded this as falling over at about 1,500 requests per
+  instance. **That figure did not reproduce in the Phase 10 builds:** one `ab -n 5000
+  -c 5` stalled between 3,000 and 3,500 requests in 8 of 8 tries, on plain, base, ALL
+  and ALL with the larger ring alike (so it is not caused by vmitrace), and in 7 of 8
+  nginx still answered a `curl` afterwards. In 100-request steps, 3,000 requests
+  passed. The cause is not known. Even 3,000 requests last only about 0.2 s at these
+  rates, so the real guest has not given a sustained load. The simulated guest follows
+  the same record protocol but is not a real workload, so these numbers locate the
+  limit and are not results for nginx.
 - The output queue trades memory for burst tolerance. Peak RSS in these runs was
-  61.6 MiB, with up to 13,745 records queued. A full 256 Ki queue was not measured.
+  61.8 MiB, with up to 13,745 records queued. A full 256 Ki queue was not measured.
 - The threads share the GIL, so reader latency still depends on the output work.
 
 **To consider later: sending less to Jaeger.** None of these is implemented.

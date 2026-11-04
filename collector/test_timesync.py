@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from timesync import OffsetEstimator  # noqa: E402
+from timesync import LineOffsetEstimator, OffsetEstimator  # noqa: E402
 
 MS = 1_000_000
 S = 1_000_000_000
@@ -130,6 +130,98 @@ class OffsetEstimatorTest(unittest.TestCase):
         # collector passes them with fresh=False, i.e. never calls update().
         e = OffsetEstimator()
         self.assertIsNone(e.offset)
+
+
+class LineOffsetEstimatorTest(unittest.TestCase):
+    def run_line(self, e, ppm=26, seconds=3600, step=3, pause=None, jump=None):
+        """Guest clock slower than the host by `ppm`. Poll interval 10 ms,
+        write at a random point in it. -> truth at the last sample."""
+        rng = random.Random(3)
+        base = 10**15
+        truth = None
+        for t in range(0, seconds, step):
+            host = base + t * S + rng.randrange(10 * MS)
+            guest = int((host - base) * (1 - ppm / 1e6))
+            truth = host - guest
+            if jump is not None and t >= jump:
+                truth += 50 * MS
+                guest -= 50 * MS
+            t_lo = host - rng.randrange(10 * MS)
+            t_hi = t_lo + 10 * MS
+            if pause is not None and t == pause[0]:
+                t_lo = host + pause[1]      # published well after the timestamp
+                t_hi = t_lo + 10 * MS
+            e.update([guest], t_lo, t_hi)
+        return truth
+
+    def test_constant_rate_never_resets(self):
+        for ppm in (0, 26, 200, -50):
+            e = LineOffsetEstimator()
+            truth = self.run_line(e, ppm)
+            self.assertEqual(e.resets, 0, ppm)
+            self.assertLess(abs(e.slope * 1e6 - ppm), 2, ppm)
+            self.assertLess(abs(e.offset - truth), 3 * MS, ppm)
+
+    def test_window_on_same_input_resets(self):
+        e = OffsetEstimator(None)
+        self.run_line(e)
+        self.assertGreater(e.resets, 0)
+
+    def test_pause_within_margin_does_not_reset(self):
+        e = LineOffsetEstimator(lower_margin_ns=500_000)
+        self.run_line(e, pause=(1800, 300_000))
+        self.assertEqual(e.resets, 0)
+
+    def test_step_resets_once_and_recovers(self):
+        e = LineOffsetEstimator()
+        truth = self.run_line(e, jump=1800)
+        self.assertEqual(e.resets, 1)
+        self.assertLess(abs(e.offset - truth), 5 * MS)
+
+    def test_slow_curvature_retires_old_data_without_reset(self):
+        e = LineOffsetEstimator(lower_margin_ns=0)
+        base = 10**15
+        for t in range(0, 7200, 3):
+            host = base + t * S
+            # rate changes by 10 ppm halfway
+            drift = 26 * t if t < 3600 else 26 * 3600 + 36 * (t - 3600)
+            guest = host - base - drift * 1000
+            e.update([guest], host - 1 * MS, host + 1 * MS)
+        self.assertEqual(e.resets, 0)
+        self.assertGreater(e.trims, 0)
+        self.assertLess(abs(e.slope * 1e6 - 36), 3)
+
+    def test_slope_held_until_enough_data(self):
+        e = LineOffsetEstimator()
+        truth = None
+        rng = random.Random(5)
+        for t in range(0, 30, 3):
+            host = 10**15 + t * S
+            lo = host - rng.randrange(10 * MS)
+            e.update([t * S], lo, lo + 10 * MS)
+            truth = host - t * S
+            self.assertLess(abs(e.offset - truth), 10 * MS)
+        self.assertEqual(e.slope, 0.0)
+
+    def test_margin_does_not_move_the_estimate(self):
+        a, b = LineOffsetEstimator(lower_margin_ns=0), LineOffsetEstimator(lower_margin_ns=500_000)
+        for e in (a, b):
+            for t in range(0, 300, 3):
+                host = 10**15 + t * S
+                e.update([t * S], host - 5 * MS, host + 5 * MS)
+        self.assertLess(abs(a.offset - b.offset), 2)
+
+    def test_same_interface_before_any_data(self):
+        e = LineOffsetEstimator()
+        self.assertIsNone(e.offset)
+        self.assertIsNone(e.uncertainty)
+        e.update([], 0, 1)
+        self.assertEqual(e.samples, 0)
+
+    def test_window_lower_margin(self):
+        e = OffsetEstimator(lower_margin_ns=100)
+        e.update([0], 500, 600)
+        self.assertEqual((e.lo, e.hi), (400, 600))
 
 
 if __name__ == "__main__":

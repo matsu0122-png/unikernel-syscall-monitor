@@ -84,6 +84,10 @@ PERF_CONDITIONS = {
     "all-ii":    dict(kind="vmitrace", build="all",   read=True),
     "legacy-p8": dict(kind="legacy", switches=BREAKDOWN_CONDITIONS["C4"], cond="C4"),
     "legacy-c1": dict(kind="legacy", switches=BREAKDOWN_CONDITIONS["C1"], cond="C1"),
+    "netfd14-i":  dict(kind="vmitrace", build="netfd-r14", read=False),
+    "netfd14-ii": dict(kind="vmitrace", build="netfd-r14", read=True),
+    "all14-i":    dict(kind="vmitrace", build="all-r14",   read=False),
+    "all14-ii":   dict(kind="vmitrace", build="all-r14",   read=True),
 }
 
 
@@ -174,7 +178,7 @@ def start_collector(name, manifest, raw, tag, otel, poll_ms, extra=()):
             "--otel", otel]
     if otel == "otlp":
         args += ["--otlp-endpoint", "localhost:14317"]
-    args += list(extra)
+    args += [a.replace("{log}", str(raw / f"{tag}.offset.log")) for a in extra]
     return subprocess.Popen(args, stdout=subprocess.DEVNULL,
                             stderr=open(raw / f"{tag}.collector.log", "w"))
 
@@ -279,7 +283,7 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300, extra=()):
            "requests_seen": None, "boot_records": None,
            "entry_hits": None, "spans_generated": None, "jaeger_spans": None,
            "spans_missing": None, "jaeger_traces": None, "otel_queue_full": None,
-           "collector_maxrss_kb": None, "output": None, "reader_cpu_s": None, "writer_cpu_s": None,
+           "collector_maxrss_kb": None, "vmhwm_kb": None, "output": None, "reader_cpu_s": None, "writer_cpu_s": None,
            "peak_unread": None, "peak_output_queue": None, "max_poll_gap_ms": None,
            "lost_output_queue": None,
            "note": ""}
@@ -343,7 +347,8 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300, extra=()):
                        peak_unread=st["peak_unread"][0],
                        peak_output_queue=st["peak_output_queue"],
                        max_poll_gap_ms=round(st["max_poll_gap_ms"], 1),
-                       lost_output_queue=c.get("lost_output_queue", 0))
+                       lost_output_queue=c.get("lost_output_queue", 0),
+                       vmhwm_kb=st.get("vmhwm_kb"))
             evs = [json.loads(l) for l in open(raw / f"{tag}.jsonl")]
             acc = [e for e in evs if e["syscall"] == "accept4"]
             row["accept4"] = sum((e["ret"] or 0) >= 0 for e in acc)
@@ -416,9 +421,13 @@ def cmd_longrun(args):
     (raw / "host_before.json").write_text(json.dumps(host_state(), indent=2))
     name = "p10long"
     manifest = BUILD_ROOT / args.build / ".unikraft/build/manifest.json"
+    log_arg = ["--offset-log={log}"]
     colls = {f"window{w}": start_collector(
-        name, manifest, raw, f"window{w}", "none", 10, ["--offset-window-s", str(w)])
-        for w in (60, 0)}
+        name, manifest, raw, f"window{w}", "none", 10,
+        ["--offset-mode=window", "--offset-window-s", str(w), *log_arg])
+        for w in (60, 20, 0)}
+    colls["line"] = start_collector(name, manifest, raw, "line", "none", 10, log_arg)
+    curl_times = open(raw / "curl_times.txt", "w")
     time.sleep(0.3)
     kraft_run_vmitrace(name, args.build, args.group)
     time.sleep(BOOT_SETTLE_S)
@@ -426,12 +435,15 @@ def cmd_longrun(args):
     sent = failed = 0
     try:
         while time.monotonic() - t0 < args.seconds:
+            before = time.time_ns()
             r = subprocess.run(["curl", "-s", "-m", "5", "-o", "/dev/null", URL])
+            curl_times.write(f"{before} {time.time_ns()} {r.returncode}\n")
             sent += 1
             failed += r.returncode != 0
             time.sleep(args.interval)
     finally:
         elapsed = time.monotonic() - t0
+        curl_times.close()
         stop(name)
     rows = []
     for tag, coll in colls.items():
@@ -444,10 +456,43 @@ def cmd_longrun(args):
             "offset_resets": st["offset_resets"], "offset_samples": st["offset_samples"],
             "offset_uncertainty_ns": st["offset_uncertainty_ns"],
             "offset_drift_ns": hist[-1][1] - hist[0][1] if len(hist) > 1 else None,
-            "collector_cpu_s": round(cpu, 3), "collector_maxrss_kb": coll.maxrss_kb})
+            "offset_slope_ppm": st["offset_slope_ppm"],
+            "collector_cpu_s": round(cpu, 3), "vmhwm_kb": st.get("vmhwm_kb")})
         log(f"  -> {rows[-1]}")
     write_csv(args.csv, rows)
     (raw / "host_after.json").write_text(json.dumps(host_state(), indent=2))
+
+
+# --- how long an instance lasts ---
+
+def cmd_lifetime(args):
+    """Requests until the instance stops answering, per build (Phase 10-7: does
+    a larger ring change the ~1,500 limit?). Steps of --step requests."""
+    rows = []
+    for rnd in range(1, args.rounds + 1):
+        for build in args.builds:
+            name = f"p10life{build.replace('-', '')}r{rnd}"
+            kraft_run_vmitrace(name, build, args.group)
+            time.sleep(BOOT_SETTLE_S)
+            done, note = 0, ""
+            try:
+                while done < args.max:
+                    r = subprocess.run(["ab", "-q", "-s", "5", "-n", str(args.step), "-c", "5", URL],
+                                       capture_output=True, text=True, timeout=30)
+                    m = re.search(r"Complete requests:\s+(\d+)", r.stdout)
+                    f = re.search(r"Failed requests:\s+(\d+)", r.stdout)
+                    if r.returncode or not m or int(m.group(1)) < args.step or (f and int(f.group(1))):
+                        note = "stopped answering"
+                        break
+                    done += args.step
+            except subprocess.TimeoutExpired:
+                note = "stopped answering (timeout)"
+            finally:
+                stop(name)
+            rows.append({"build": build, "round": rnd, "requests_ok": done,
+                         "note": note or f"reached --max {args.max}"})
+            log(f"  -> {rows[-1]}")
+            write_csv(args.csv, rows)
 
 
 # --- loss ---
@@ -593,9 +638,15 @@ def main():
     g.add_argument("--build", default="netfd")
     g.add_argument("--raw-name", default="longrun")
     g.add_argument("--csv", default=str(REPO / "logs" / "bench_p10_7_longrun.csv"))
+    t = sub.add_parser("lifetime")
+    t.add_argument("--builds", nargs="*", default=["all", "all-r14"])
+    t.add_argument("--rounds", type=int, default=3)
+    t.add_argument("--step", type=int, default=100)
+    t.add_argument("--max", type=int, default=3000)
+    t.add_argument("--csv", default=str(REPO / "logs" / "bench_p10_7_lifetime.csv"))
     args = ap.parse_args()
     {"perf": cmd_perf, "loss": cmd_loss, "correct": cmd_correct,
-     "longrun": cmd_longrun}[args.cmd](args)
+     "longrun": cmd_longrun, "lifetime": cmd_lifetime}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -71,9 +71,9 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
 
 - Zero loss for NETFD and ALL at 1,350 requests: met. No compiled reader needed.
 - Default group NETFD: done.
+- Time offset: line against `CLOCK_MONOTONIC_RAW`, 0 resets in two one-hour runs.
 - Open:
-  - `offset_resets` per hour: 24 with the 60 s window, 37 without. Try a shorter
-    window (about 20 s or less, an estimate) or fitting the drift, then repeat the
-    one-hour run.
-  - One unexplained reset in a short trial (step 2 netfd-ii round 2).
+  - Ring default 14 (16,384 records): measured, recommended, awaiting a decision.
+  - Why `ab -n 5000` stalls between 3,000 and 3,500 requests (not caused by vmitrace).
+  - Accuracy in the first 5 minutes after boot; 65 late requests in the curl check.
   - Reducing what is sent to Jaeger (README "Limits"), not decided.

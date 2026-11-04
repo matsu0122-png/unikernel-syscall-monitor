@@ -56,7 +56,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))          # syscall_table.py
 
 from syscall_table import SYSCALL_TABLE  # noqa: E402
-from timesync import DEFAULT_WINDOW_NS, OffsetEstimator  # noqa: E402
+from timesync import (DEFAULT_LOWER_MARGIN_NS, DEFAULT_WINDOW_NS,  # noqa: E402
+                      LineOffsetEstimator, OffsetEstimator)
 from vmitrace_reader import (F_ENTRY_ONLY, F_NO_ENTER_TS, GuestRing,  # noqa: E402
                              Manifest)
 
@@ -232,7 +233,14 @@ def main():
                     help="records waiting for output before new ones are dropped")
     ap.add_argument("--offset-window-s", type=float,
                     default=DEFAULT_WINDOW_NS / 1e9,
-                    help="time offset from the last N s of data; 0 = all data")
+                    help="--offset-mode window: use the last N s; 0 = all data")
+    ap.add_argument("--offset-mode", choices=("line", "window"), default="line",
+                    help="line: constant rate against CLOCK_MONOTONIC_RAW, wall "
+                         "clock added at each use; window: against the wall clock")
+    ap.add_argument("--offset-lower-margin-us", type=float,
+                    help="allowance for a vCPU pause (default: line "
+                         f"{DEFAULT_LOWER_MARGIN_NS // 1000}, window 0)")
+    ap.add_argument("--offset-log", help="write every poll's clock readings here")
     ap.add_argument("--stats", help="write final statistics JSON here")
     ap.add_argument("--wait-s", type=float, default=60.0,
                     help="how long to wait for the file / a valid header")
@@ -302,7 +310,17 @@ def main():
         tb = TraceBuilder(tracer)
 
     out = CappedWriter(args.jsonl, int(args.max_jsonl_mb * 1024 * 1024))
-    est = OffsetEstimator(int(args.offset_window_s * 1e9) or None)
+    line_mode = args.offset_mode == "line"
+    if args.offset_lower_margin_us is not None:
+        margin = int(args.offset_lower_margin_us * 1000)
+    else:
+        margin = DEFAULT_LOWER_MARGIN_NS if line_mode else 0
+    if line_mode:
+        est = LineOffsetEstimator(margin)
+    else:
+        est = OffsetEstimator(int(args.offset_window_s * 1e9) or None, margin)
+    offset_log = open(args.offset_log, "w") if args.offset_log else None
+    raw_clock = time.CLOCK_MONOTONIC_RAW
     pending = []             # records seen before the offset was anchored
     max_pending = 4 * man.capacity * man.nr_lcpu
     stop = False
@@ -321,8 +339,14 @@ def main():
     def take(recs, fresh, t_lo, t_hi):
         nonlocal pending
         if fresh and recs:
-            est.update([guest_t(r) for r in recs], t_lo, t_hi)
+            times = [guest_t(r) for r in recs]
+            est.update(times, *((t_lo[0], t_hi[0]) if line_mode else (t_lo[1], t_hi[1])))
+            if offset_log:
+                offset_log.write(f"{t_lo[0]} {t_hi[0]} {t_lo[1]} {t_hi[1]} "
+                                 f"{min(times)} {max(times)} {len(times)}\n")
         offset = est.offset
+        if offset is not None and line_mode:
+            offset += time.time_ns() - time.clock_gettime_ns(raw_clock)
         if offset is None:
             pending.extend(recs)
             if len(pending) > max_pending:
@@ -374,11 +398,12 @@ def main():
 
     def poll_all(fresh):
         nonlocal t_prev
-        t_start = time.time_ns()
+        t_start = (time.clock_gettime_ns(raw_clock), time.time_ns())
         recs = []
         for lcpu in range(man.nr_lcpu):
             recs.extend(ring.poll(lcpu))
-        take(recs, fresh and t_prev is not None, t_prev, time.time_ns())
+        take(recs, fresh and t_prev is not None, t_prev,
+             (time.clock_gettime_ns(raw_clock), time.time_ns()))
         t_prev = t_start
         return len(recs)
 
@@ -426,6 +451,8 @@ def main():
         pending = []
     reader_cpu_s = time.thread_time()
     output.close()
+    if offset_log:
+        offset_log.close()
     if output.error is not None:
         log(f"output failed: {output.error!r}")
 
@@ -442,6 +469,10 @@ def main():
         "dropped_guest": [ring.dropped(l) for l in range(man.nr_lcpu)],
         "capacity": man.capacity,
         "offset_ns": est.offset,
+        "offset_mode": args.offset_mode,
+        "offset_lower_margin_ns": margin,
+        "offset_slope_ppm": est.slope * 1e6 if line_mode else None,
+        "offset_trims": est.trims if line_mode else None,
         "offset_anchored": est.offset is not None,
         "offset_uncertainty_ns": est.uncertainty,
         "offset_samples": est.samples,
@@ -469,6 +500,11 @@ def main():
         stats["shared_files_left"] = left
         log(f"QEMU exited; shared files still present: {left or 'none'}")
 
+    # VmHWM belongs to this process; ru_maxrss would also count the RSS of
+    # whoever started it, because exec keeps that high-water mark
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("VmHWM:"):
+            stats["vmhwm_kb"] = int(line.split()[1])
     log("stats " + json.dumps(stats))
     if args.stats:
         Path(args.stats).write_text(json.dumps(stats, indent=2) + "\n")

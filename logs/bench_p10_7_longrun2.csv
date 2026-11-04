@@ -1,0 +1,5 @@
+collector,rc,seconds,requests,failed,emitted,write_idx,offset_resets,offset_samples,offset_uncertainty_ns,offset_drift_ns,offset_slope_ppm,collector_cpu_s,collector_maxrss_kb
+window60,0,3600,1194,0,8405,8405,6,8405,3667487,99243525,,16.821,17944
+window20,0,3600,1194,0,8405,8405,1,8405,4007163,101175395,,16.948,18164
+window0,0,3600,1194,0,8405,8405,21,8405,1688972,99830137,,16.893,18152
+line,0,3600,1194,0,8405,8405,0,8405,275704,119433317,32.868294881906394,16.142,18460
