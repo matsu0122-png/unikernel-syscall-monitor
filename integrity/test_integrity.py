@@ -269,6 +269,56 @@ class IntegrityTest(unittest.TestCase):
         self.c.check_once()
         self.assertTrue(self.events("restored", "accept4_mismatch"))
 
+    def _accepted_connection(self):
+        self.connect(1)
+        self.g.record(SYS_ACCEPT4, 7)
+        self.c.check_once()
+
+    def _raise_accept4_alert(self):
+        self.connect(5)
+        self.c.check_once()
+        self.c.check_once()
+
+    def test_accept4_lasting_gap_clears_after_recorded_accepts(self):
+        # live run: the gap stayed after the tampering was undone, so the alert
+        # never cleared and could not fire again
+        self.c.check_once()
+        self._raise_accept4_alert()
+        for _ in range(4):
+            self._accepted_connection()
+        self.assertFalse(self.events("restored", "accept4_mismatch"))
+        self._accepted_connection()              # accept_settle is 5
+        self.assertEqual(len(self.events("restored", "accept4_mismatch")), 1)
+        # later loss alerts again
+        self._raise_accept4_alert()
+        self.assertEqual(len(self.events("alert", "accept4_mismatch")), 2)
+
+    def test_accept4_alert_stays_without_traffic(self):
+        self.c.check_once()
+        self._raise_accept4_alert()
+        for _ in range(20):
+            self.c.check_once()
+        self.assertFalse(self.events("restored", "accept4_mismatch"))
+
+    def test_accept4_alert_stays_while_loss_continues(self):
+        self.c.check_once()
+        self._raise_accept4_alert()
+        for _ in range(20):
+            self.connect(2)                      # one of two is recorded
+            self.g.record(SYS_ACCEPT4, 7)
+            self.c.check_once()
+        self.assertFalse(self.events("restored", "accept4_mismatch"))
+
+    def test_accept4_small_gaps_add_up(self):
+        self.c.check_once()
+        for _ in range(4):
+            self.connect(1)                      # one unrecorded at a time
+            self.c.check_once()
+            for _ in range(3):
+                self._accepted_connection()
+        self.c.check_once()
+        self.assertTrue(self.events("alert", "accept4_mismatch"))
+
     def test_accept4_within_tolerance(self):
         self.c.check_once()
         self.connect(3)                          # tolerance is 3

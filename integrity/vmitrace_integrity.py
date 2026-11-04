@@ -16,7 +16,11 @@ the shared guest-RAM file read-only, and raises an alert when
               for `--stall-checks` consecutive checks
   accept4     the host has seen more connections than the guest recorded
               successful accept4 (beyond --accept-tolerance plus records the
-              checker itself lost to overwrite) for `--stall-checks` checks
+              checker itself lost to overwrite) for `--stall-checks` checks.
+              The gap is cumulative, so slow loss adds up. It is cleared once
+              the guest has recorded `--accept-settle` more accepts with no
+              new loss: "restored" then means recording works again, and later
+              loss alerts again. Without traffic the alert stays up.
 
 The last two catch bypasses that leave every hashed byte intact (README
 "Limits"): hooks unregistered by other means, LSTAR pointing elsewhere, a
@@ -228,7 +232,8 @@ class Checker:
     """One integrity check per check_once() call."""
 
     def __init__(self, man, regions, ring, alerter, conns=None,
-                 no_hash=False, stall_checks=2, accept_tolerance=3):
+                 no_hash=False, stall_checks=2, accept_tolerance=3,
+                 accept_settle=5):
         self.man = man
         self.regions = regions
         self.ring = ring
@@ -237,6 +242,7 @@ class Checker:
         self.no_hash = no_hash
         self.stall_checks = stall_checks
         self.accept_tolerance = accept_tolerance
+        self.accept_settle = accept_settle
         self.checks = 0
         self.last_widx = ring.write_idx(0)
         self.guest_accepts = 0
@@ -245,6 +251,9 @@ class Checker:
         self.pending_conns = 0      # host connections since the ring last moved
         self.accept_run = 0
         self.host_base = None
+        self.cleared_gap = 0        # loss already reported and settled
+        self.gap_peak = 0           # largest gap during the current alert
+        self.accepts_at_peak = 0
 
     def check_once(self):
         self.checks += 1
@@ -290,9 +299,21 @@ class Checker:
                                self.pending_conns,
                            "write_idx": widx, "checks": self.stall_run})
             host_seen = self.conns.total - self.host_base
-            gap = host_seen - self.guest_accepts
+            gap = host_seen - self.guest_accepts - self.cleared_gap
             allowed = self.accept_tolerance + (lost - self.lost_before)
             self.accept_run = self.accept_run + 1 if gap > allowed else 0
+            if self.accept_run >= self.stall_checks:
+                if gap > self.gap_peak:
+                    self.gap_peak = gap
+                    self.accepts_at_peak = self.guest_accepts
+                if self.guest_accepts - self.accepts_at_peak >= \
+                        self.accept_settle:
+                    self.cleared_gap += gap
+                    self.lost_before = lost
+                    gap, allowed = 0, self.accept_tolerance
+                    self.accept_run = 0
+            if self.accept_run < self.stall_checks:
+                self.gap_peak = 0
             alerts.update("accept4_mismatch",
                           self.accept_run >= self.stall_checks,
                           {"host_connections": host_seen,
@@ -334,6 +355,7 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--stall-checks", type=int, default=2)
     ap.add_argument("--accept-tolerance", type=int, default=3)
+    ap.add_argument("--accept-settle", type=int, default=5)
     ap.add_argument("--alerts")
     ap.add_argument("--stats")
     ap.add_argument("--otel", choices=("otlp", "none"), default="otlp")
@@ -383,7 +405,8 @@ def main():
     while ring.header_status() == "not_loaded":
         time.sleep(0.01)
     checker = Checker(man, regions, ring, alerter, conns, args.no_hash,
-                      args.stall_checks, args.accept_tolerance)
+                      args.stall_checks, args.accept_tolerance,
+                      args.accept_settle)
 
     stop = False
 

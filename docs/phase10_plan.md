@@ -49,7 +49,7 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
    `--stats`. A non-zero `offset_resets` must be explained (clock drift or a
    violated assumption) before that run's timestamps are used.
 
-## 10-6 integrity
+## 10-6 integrity (done; README Phase 10-6 result)
 
 - Separate process and user (group `vmitrace`). Periodically hash every
   `manifest.hash_regions` entry in guest RAM, check `write_idx` advances,
@@ -65,3 +65,13 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
   - number of connections seen on the host vs number of recorded
     `accept4` returning >= 0 over the same window -> alert on mismatch
     beyond what overwrite loss explains.
+- Not done (need root): separate user and group `vmitrace`.
+
+## Waiting
+
+- **10-5 supplementary measurement**: starts when the CPU governor is set and
+  unrelated containers are stopped (done by hand, then requested).
+- **10-7 collector speed-up**: after 10-6, on request. Batch copy of the unread
+  range, then separate read and output threads, measuring loss after each under
+  the 10-5 conditions; report on a compiled reader if still not enough. Make
+  NETFD the default group (`Config.uk`, README).

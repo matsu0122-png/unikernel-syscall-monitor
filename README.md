@@ -23,6 +23,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-3 (collector): done, tested as a single user.** See below. `collector/vmitrace_collector.py` maps only the header page and the ring range read-only, refuses to read while the guest header differs from the manifest, validates every record, and writes Phase-8-compatible JSONL (`validate_strace.py`: full match) plus OTel spans grouped into one trace per connection. Timestamps land within about +-1.5 ms of host time at 10 ms polling. The `vmitrace` group and separate users need root: commands are listed in the 10-3 section, not run.
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
 - **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size.
+- **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
 
 ## Phase 1 result
 
@@ -900,9 +901,9 @@ unverified; SMP untested; overhead not measured yet (10-5).
   `uk_syscall_r_*` directly instead of executing `syscall`. Unikraft's own
   native calls already take this path (with `execenv == NULL`, filtered
   out by design). All hashed regions stay intact while syscalls stop
-  appearing in the ring. Only behavioural checks can catch this (planned
-  for 10-6, e.g. traffic without a moving `write_idx`, connection counts vs
-  recorded `accept4`).
+  appearing in the ring. Only behavioural checks can catch this (10-6:
+  `stalled` and `accept4_mismatch`, see "Phase 10-6 result" for their
+  limits).
 - **The wrapper's "file still in use" check reads `/proc/*/maps`, and only
   processes of the same user are visible there.** A process of another
   user that maps the file (e.g. a reader in group `vmitrace`) is not seen,
@@ -1569,6 +1570,107 @@ From the perf (ii) runs (ab workload, 350 requests per instance):
   the trap-based legacy monitor.
 - The new bottleneck is the host-side reader. The collector loses records
   under sustained load whenever the ring cannot hold the burst.
+
+## Phase 10-6 result
+
+Goal: detect tampering with what the tracer depends on, from a separate host
+process that takes nothing from the collector. Tool:
+`integrity/vmitrace_integrity.py`, unit tests: `integrity/test_integrity.py`
+(21 tests on a synthetic guest RAM file). Live logs are in
+`logs/p10_6_live/`, which is not committed.
+
+### Checks
+
+| alert | condition |
+|---|---|
+| `hash:<region>` | one of the 9 manifest regions differs; names the first differing address and the byte count |
+| `header` | the guest header differs from the manifest (includes nonce and bitmap) |
+| `write_idx_regress` | `write_idx` goes backwards |
+| `stalled` | the host saw connections since `write_idx` last moved, and it has not moved for 2 checks |
+| `accept4_mismatch` | host connections minus recorded successful `accept4` exceed 3 + the checker's own overwrite loss, for 2 checks |
+
+Host connections come from `/proc/net/tcp{,6}` (no root needed). Alerts are
+edge-triggered and go to stderr, JSONL and OTel (service
+`vmitrace-integrity`). Default interval: 1 s.
+
+### Live tests
+
+ALL build on the distro QEMU through the wrapper, one normal checker and one
+`--no-hash` checker side by side, plus the collector. The tampering was done by
+hand by writing to the shared file directly, not through HMP. The
+`_ukplat_syscall` and `uk_syscall_entertab` cases are covered by unit tests only.
+
+- **A**: bitmap (`0xf36ec0`, 64 bytes) set to zero.
+- **B**: exittab entry (`0xf3d218`) changed from `vt_exit` to `vt_enter`, one
+  byte.
+
+Test A and the first B runs (2026-10-26, code before the fix below):
+
+| test | normal checker | `--no-hash` checker |
+|---|---|---|
+| A, no traffic | `hash:vmitrace_bitmap`, `header` | `header` |
+| A, 3 curls | `hash:vmitrace_bitmap`, `header`, `stalled` | `header`, `stalled` |
+| B, no traffic | `hash:uk_syscall_exittab` | nothing (as expected) |
+| B, 3 curls | `hash:uk_syscall_exittab`, `stalled`, `accept4_mismatch` | `stalled`, `accept4_mismatch` |
+
+In test A the collector logged `bitmap mismatch` and stopped reading until the
+header matched again.
+
+B after the fix (2026-11-04, new checkers on the same guest):
+
+| step | normal checker | `--no-hash` checker |
+|---|---|---|
+| B, 3 unrecorded connections | `hash:uk_syscall_exittab`, `stalled`; no `accept4_mismatch` (gap 3, allowed 3) | `stalled` |
+| B again, 1 curl | `hash:uk_syscall_exittab`, `stalled`, `accept4_mismatch` (15 connections, 11 `accept4`, gap 4) | `stalled`, `accept4_mismatch` |
+| restored, no traffic | `hash:uk_syscall_exittab` restored; the other two stay up | both stay up |
+| curl 1 | `stalled` restored | `stalled` restored |
+| curl 5 | `accept4_mismatch` restored | `accept4_mismatch` restored |
+
+Jaeger received all 10 spans of the normal checker from this run: 5 alerts with
+status ERROR and 5 restored. The hash alert for the second B came about 1 s
+after the write. Final stats of both checkers: 577 checks, nothing bad at the
+end, 20 host connections, 16 `accept4`, no reader rejects. The difference of 4 is
+the connections lost while B was in place (3 in the first step, 1 in the second).
+The collector emitted 735 of 735 records.
+
+**`offset_resets` was 4 in this collector run (plan item 8), not explained.** It
+had been running for 9 days. Clock drift is the likely cause, but this was not
+checked. No result here uses its timestamps: alert times come from the checker's
+own host clock.
+
+### Bug found by the live run: `accept4_mismatch` never cleared
+
+The gap is cumulative. Connections lost during tampering stay in it after the
+tampering is undone, so the alert stayed up, and because alerts are
+edge-triggered, later loss raised nothing new. It also hid a detail: the first
+B alert only fired because the 3 connections lost in test A were still in the
+gap. B alone with 3 lost connections stays within the tolerance.
+
+Fix: during an alert, the gap is cleared once the guest has recorded
+`--accept-settle` (default 5) more successful `accept4` without the gap growing.
+"restored" then means recording works again. Without traffic the alert stays up,
+because recovery cannot be shown. While loss continues it also stays up. The
+gap stays cumulative below the alert level, so slow loss still adds up.
+
+### Limits
+
+- **Up to 3 unrecorded connections do not raise `accept4_mismatch`**
+  (`--accept-tolerance`). If the ring stops entirely, `stalled` still fires. If
+  only `accept4` is hidden while other syscalls keep moving the ring, `stalled`
+  stays quiet, so this tolerance is the detection floor for that case.
+- **A settled gap is forgiven.** Loss that happened before a "restored" is not
+  counted again; the record of it is the alert itself.
+- Both behavioural checks only see connections to the forwarded port. They need
+  a build whose group records `accept4` (NET, NETFD, ALL).
+- A connection whose client port is reused while the earlier socket is still
+  listed (TIME_WAIT, 60 s) is counted once. This follows from the code and was
+  not tested.
+- A modification reverted between two checks is missed (see "Limits" in the
+  security model); here the window is 1 s.
+- No false alert in 577 checks, but this is a short run at very low traffic. No
+  false-alert rate under load has been measured.
+- **Not tested: separate user and group `vmitrace`** (need root). Everything ran
+  as one user.
 
 ## Notes for later phases
 
