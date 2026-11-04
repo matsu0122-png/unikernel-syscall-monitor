@@ -4,6 +4,7 @@
 perf  9 conditions, alternated round by round (as Phase 8's re-measurement):
       every trial boots a fresh instance, waits 3 s, sends 50 warmup
       requests, then one `ab -n 300 -c 5`, then stops the instance.
+        plain         base build, plain `kraft run` (no wrapper, no shared RAM)
         base          base build (no lib-vmitrace), wrapper (shared RAM)
         net-i  net-ii    NET   build, (i) nobody reads / (ii) collector->Jaeger
         netfd-i netfd-ii NETFD build, same
@@ -12,6 +13,8 @@ perf  9 conditions, alternated round by round (as Phase 8's re-measurement):
                       hooks, JSONL + debug log (= Phase 8 / Phase 9 C4)
         legacy-c1     same QEMU, traps only (= Phase 9 C1)
       The two legacy conditions use the Phase 1-9 image in ../.unikraft.
+      (ii) trials also count the spans Jaeger received, after the collector
+      has exited, against what the collector generated.
 
 loss  ring capacity x collector poll interval x load: ALL builds with
       LIBVMITRACE_RING_ORDER 10/12/14, --poll-ms 1/10/100, ab -c 1/5/20,
@@ -36,6 +39,8 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -50,6 +55,8 @@ from bench_overhead_inline import (BREAKDOWN_CONDITIONS, DEFAULT_QEMU,  # noqa: 
 from vmitrace_reader import GuestRing, Manifest  # noqa: E402
 
 PORT = 8090
+JAEGER_API = "http://127.0.0.1:26686/api/v3/traces"
+JAEGER_MAX_TRACES = 10000        # the API's search depth limit
 URL = f"http://localhost:{PORT}/"
 BUILD_ROOT = Path(os.environ.get("VMITRACE_BUILD_ROOT", "/home/matsu/vmitrace-build"))
 SHM_DIR = Path("/dev/shm/vmitrace")
@@ -62,6 +69,7 @@ LEGACY_ENTRY = 0x101000
 LEGACY_RET = 0x1010da
 
 PERF_CONDITIONS = {
+    "plain":     dict(kind="vmitrace", build="base",  read=False, wrapper=False),
     "base":      dict(kind="vmitrace", build="base",  read=False),
     "net-i":     dict(kind="vmitrace", build="net",   read=False),
     "net-ii":    dict(kind="vmitrace", build="net",   read=True),
@@ -102,6 +110,9 @@ def host_state():
         "kraft": sh("kraft version 2>/dev/null | head -1"),
         "ab": sh("ab -V | head -1"),
         "logins": sh("who | wc -l"),
+        "cpuidle_driver": sh("cat /sys/devices/system/cpu/cpuidle/current_driver"),
+        "no_turbo": sh("cat /sys/devices/system/cpu/intel_pstate/no_turbo"),
+        "cpu_mhz": sh("sed -n 's/^cpu MHz.*: *//p' /proc/cpuinfo").split(),
     }
 
 
@@ -125,10 +136,11 @@ def run_ab(n, c, out_path=None, timeout=180):
 
 # --- instances ---
 
-def kraft_run_vmitrace(name, build, group):
+def kraft_run_vmitrace(name, build, group, wrapper=True):
     env = dict(os.environ, VMITRACE_NAME=name, VMITRACE_GROUP=group)
     env = {k: v for k, v in env.items() if not k.startswith("VMI_MONITOR_")}
-    subprocess.run(["kraft", "run", "-d", "--qemu", str(WRAPPER), "-p",
+    qemu = ["--qemu", str(WRAPPER)] if wrapper else []
+    subprocess.run(["kraft", "run", "-d", *qemu, "-p",
                     f"{PORT}:80", "--name", name, "."],
                    cwd=BUILD_ROOT / build, env=env, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -199,6 +211,53 @@ def snapshot(name, manifest):
         ring.close()
 
 
+# --- Jaeger ---
+
+def jaeger_query(instance, t_start):
+    """-> (spans, traces) Jaeger holds for this instance since t_start. Instance
+    names repeat between runs, so old data is excluded by each span's own start
+    time; the search window only needs to contain them."""
+    fmt = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    q = urllib.parse.urlencode({
+        "query.service_name": "vmitrace",
+        "query.start_time_min": fmt(t_start - 60),
+        "query.start_time_max": fmt(time.time() + 60),
+        "query.num_traces": JAEGER_MAX_TRACES})
+    with urllib.request.urlopen(f"{JAEGER_API}?{q}", timeout=120) as resp:
+        raw = resp.read().decode()
+    try:
+        docs = [json.loads(raw)]
+    except json.JSONDecodeError:
+        docs = [json.loads(l) for l in raw.splitlines() if l.strip()]
+    spans = 0
+    traces = set()
+    for doc in docs:
+        for rs in doc.get("result", doc).get("resourceSpans", []):
+            attrs = {a["key"]: a["value"].get("stringValue")
+                     for a in rs["resource"].get("attributes", [])}
+            if attrs.get("vmitrace.instance") != instance:
+                continue
+            for ss in rs.get("scopeSpans", []):
+                for sp in ss.get("spans", []):
+                    if int(sp["startTimeUnixNano"]) < t_start * 1e9:
+                        continue
+                    spans += 1
+                    traces.add(sp["traceId"])
+    return spans, len(traces)
+
+
+def jaeger_settled(instance, t_start, timeout=30):
+    """Query until two answers 1 s apart agree (ingest is asynchronous)."""
+    last = None
+    t0 = time.monotonic()
+    while True:
+        now = jaeger_query(instance, t_start)
+        if now == last or time.monotonic() - t0 > timeout:
+            return now
+        last = now
+        time.sleep(1)
+
+
 # --- perf ---
 
 def perf_trial(cond, spec, rnd, raw, group, requests=300):
@@ -210,15 +269,18 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
            "offset_resets": None, "offset_uncertainty_ns": None,
            "collector_cpu_s": None, "accept4": None, "accept4_failed": None,
            "requests_seen": None, "boot_records": None,
-           "entry_hits": None, "note": ""}
+           "entry_hits": None, "spans_generated": None, "jaeger_spans": None,
+           "spans_missing": None, "jaeger_traces": None, "otel_queue_full": None,
+           "note": ""}
     problems = []
     coll = None
+    t_start = time.time()
     if spec["kind"] == "vmitrace":
         manifest = BUILD_ROOT / spec["build"] / ".unikraft/build/manifest.json"
         if spec["read"]:
             coll = start_collector(name, manifest, raw, tag, "otlp", 10)
             time.sleep(0.3)
-        kraft_run_vmitrace(name, spec["build"], group)
+        kraft_run_vmitrace(name, spec["build"], group, spec.get("wrapper", True))
     else:
         log_path = raw / f"{tag}.jsonl"
         for p in (log_path, Path(str(log_path) + ".debug.log")):
@@ -279,6 +341,19 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
                 problems.append(f"emitted {st['emitted']} != write_idx {st['write_idx'][0]}")
             if st.get("shared_files_left"):
                 problems.append("shared files left")
+            # every record is a span; each connection and event-loop window
+            # adds a root span
+            tr = st["traces"]
+            row["spans_generated"] = tr["spans"] + tr["connections"] + tr["loop_traces"]
+            row["otel_queue_full"] = "Queue is full" in \
+                (raw / f"{tag}.collector.log").read_text()
+            try:
+                row["jaeger_spans"], row["jaeger_traces"] = jaeger_settled(name, t_start)
+                row["spans_missing"] = row["spans_generated"] - row["jaeger_spans"]
+                if row["jaeger_traces"] >= JAEGER_MAX_TRACES:
+                    problems.append("jaeger search depth reached")
+            except (OSError, ValueError) as e:
+                problems.append(f"jaeger query failed: {e}")
     if spec["kind"] == "legacy":
         chk = check_breakdown(spec["cond"], raw / f"{tag}.jsonl", LEGACY_ENTRY,
                               LEGACY_RET, WARMUP + requests)

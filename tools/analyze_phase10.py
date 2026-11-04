@@ -26,7 +26,7 @@ import csv
 import statistics as stt
 from collections import defaultdict
 
-ORDER = ["base", "net-i", "net-ii", "netfd-i", "netfd-ii", "all-i", "all-ii",
+ORDER = ["plain", "base", "net-i", "net-ii", "netfd-i", "netfd-ii", "all-i", "all-ii",
          "legacy-p8", "legacy-c1"]
 REQS = 350          # overridden by --reqs (warmup + measured requests)
 
@@ -172,6 +172,55 @@ def perf(path):
     return "\n".join(out)
 
 
+T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+       8: 2.306, 9: 2.262}
+
+
+def paired(path, ref="base"):
+    """Per-round difference from `ref` in us/request and req/s. Conditions
+    alternate within a round, so pairing removes slow host drift."""
+    ok = throughput_ok
+    rows = [r for r in csv.DictReader(open(path)) if ok(r)]
+    by = defaultdict(dict)
+    for r in rows:
+        by[r["condition"]][r["round"]] = num(r["req_per_s"])
+    out = [f"| condition | pairs | req/s minus {ref} | us/request minus {ref}, mean | 95% CI | rounds faster than {ref} |",
+           "|---|---|---|---|---|---|"]
+    for c in ORDER:
+        if c not in by or c == ref:
+            continue
+        common = sorted(set(by[c]) & set(by[ref]))
+        if len(common) < 2:
+            continue
+        drps = [by[c][k] - by[ref][k] for k in common]
+        dus = [1e6 / by[c][k] - 1e6 / by[ref][k] for k in common]
+        m, sd = mean_sd(dus)
+        half = T95.get(len(common) - 1, 2.0) * sd / len(common) ** 0.5
+        faster = sum(d < 0 for d in dus)
+        out.append(f"| {c} | {len(common)} | {fmt(stt.mean(drps))} | {fmt(m, 2)} | "
+                   f"{fmt(m - half, 2)} to {fmt(m + half, 2)} | {faster}/{len(common)} |")
+    return "\n".join(out)
+
+
+def spans(path):
+    rows = [r for r in csv.DictReader(open(path)) if num(r.get("spans_generated")) is not None]
+    out = ["| condition | round | collector records | spans generated | Jaeger received | missing | missing % | queue-full logged |",
+           "|---|---|---|---|---|---|---|---|"]
+    by = defaultdict(list)
+    for r in rows:
+        gen, got = num(r["spans_generated"]), num(r["jaeger_spans"])
+        by[r["condition"]].append((gen, got))
+        out.append(f"| {r['condition']} | {r['round']} | {fmt(num(r['emitted']), 0)} | {fmt(gen, 0)} | "
+                   f"{fmt(got, 0)} | {fmt(gen - got if got is not None else None, 0)} | "
+                   f"{fmt(100 * (gen - got) / gen if got is not None else None, 1)}% | {r['otel_queue_full']} |")
+    for c, vals in by.items():
+        gen = sum(v[0] for v in vals)
+        got = sum(v[1] or 0 for v in vals)
+        out.append(f"| **{c} total** | {len(vals)} | | {fmt(gen, 0)} | {fmt(got, 0)} | "
+                   f"{fmt(gen - got, 0)} | {fmt(100 * (gen - got) / gen, 1)}% | |")
+    return "\n".join(out)
+
+
 def loss(path):
     rows = list(csv.DictReader(open(path)))
     out = ["| capacity | poll ms | ab -c | req/s | syscalls/s during ab | records | lost | loss rate | offset_resets | offset unc. us | collector CPU s | valid |",
@@ -202,6 +251,11 @@ def main():
     THROUGHPUT_ONLY = a.throughput_only
     if a.perf:
         print(perf(a.perf))
+        if "spans_generated" in open(a.perf).readline():
+            print()
+            print(paired(a.perf))
+            print()
+            print(spans(a.perf))
     if a.loss:
         print()
         print(loss(a.loss))

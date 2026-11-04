@@ -22,7 +22,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-2 (manifest + QEMU wrapper, legacy/ move): done.** See below. `tools/gen_manifest.py` writes the trusted description of a build (expected header pointers, 8 hash regions including both hook tables, excluded boot page tables), and `tools/qemu-wrapper.sh` adds the shared-memory options to the distro QEMU for `kraft run --qemu`. All 8 regions matched live guest RAM. Phase 1-9 code now lives in `legacy/`. Remaining Phase 10 steps: `docs/phase10_plan.md`. Follow-ups before 10-3: `_ukplat_syscall` added as the 9th hash region (range found by disassembly), shared files moved to `/dev/shm/vmitrace/`, and security-model limits written down.
 - **Phase 10-3 (collector): done, tested as a single user.** See below. `collector/vmitrace_collector.py` maps only the header page and the ring range read-only, refuses to read while the guest header differs from the manifest, validates every record, and writes Phase-8-compatible JSONL (`validate_strace.py`: full match) plus OTel spans grouped into one trace per connection. Timestamps land within about +-1.5 ms of host time at 10 ms polling. The `vmitrace` group and separate users need root: commands are listed in the 10-3 section, not run.
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
-- **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size.
+- **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size. A supplementary run with the `performance` governor and unrelated containers stopped (section 7) gives the final cost figures: ALL with nobody reading +0.13 +/- 0.26 us per syscall, legacy Phase 8 103.8 us. The earlier "(ii) faster than base" result did not appear there, and Jaeger received every span the collector generated.
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
 
 ## Phase 1 result
@@ -1560,6 +1560,87 @@ From the perf (ii) runs (ab workload, 350 requests per instance):
   - NETFD closes every connection via `close`.
 - Costs: NETFD records 2.5x as much as NET (5.0 vs 2.0 per request). The
   throughput difference is within the noise of section 4.
+
+### 7. Supplementary run: `performance` governor, unrelated containers stopped
+
+`perf --only plain base netfd-i netfd-ii all-i all-ii legacy-p8 --rounds 10
+--requests 1300`, CSV: `logs/bench_p10_perf_supp.csv`, summary:
+`tools/analyze_phase10.py --perf logs/bench_p10_perf_supp.csv --reqs 1350
+--throughput-only`. Same scheme as the supplementary run in section 4: 50 warmup
++ 1,300 measured requests per fresh instance, conditions alternated within each
+round. `plain` is the base build under a plain `kraft run` (no wrapper, no shared
+memory, same distro QEMU).
+
+Host state, before / after (2026-11-04 13:28:56 - 13:35:35 JST, full records in
+`logs/bench_p10_raw/perf_supp/host_{before,after}.json`):
+
+- Governor `performance` on all 8 CPUs, set by hand and left for the owner to
+  restore. Turbo on (`no_turbo` 0), `intel_idle` driver, so C-states stay enabled.
+- Only container running: `vmitrace-jaeger-1`. No other QEMU before or after (the
+  old `vmiinline` instance had been stopped).
+- Load average 1.55-1.81 before, 2.00-1.83 after; `vmstat` idle 100% both times;
+  2 login sessions. One short read-only status check ran during the first `base`
+  trial.
+
+| condition | n | req/s mean | stddev | vs base | us/request vs base, paired (95% CI) | rounds faster than base | added us/syscall (method 2) |
+|---|---|---|---|---|---|---|---|
+| plain | 10 | 16,915.5 | 612.3 | 103.1% | -1.81 (-3.97 to 0.36) | 7/10 | -0.18 +/- 0.21 |
+| base | 10 | 16,405.8 | 450.1 | 100% | | | |
+| netfd-i | 10 | 16,175.6 | 595.0 | 98.6% | +0.90 (-0.52 to 2.33) | 3/10 | +0.09 +/- 0.23 |
+| netfd-ii | 10 | 15,868.6 | 661.0 | 96.7% | +2.13 (0.28 to 3.97) | 1/10 | +0.21 +/- 0.27 |
+| all-i | 10 | 16,071.0 | 676.6 | 98.0% | +1.33 (-1.08 to 3.74) | 4/10 | +0.13 +/- 0.26 |
+| all-ii | 10 | 15,456.6 | 689.9 | 94.2% | +3.82 (0.96 to 6.68) | 2/10 | +0.36 +/- 0.27 |
+| legacy-p8 | 10 | 898.5 | 29.3 | 5.5% | +1,053.05 (1,026.58 to 1,079.51) | 0/10 | +103.77 +/- 1.29 |
+
+No failed requests in any trial. The CIs are per condition, not corrected for
+comparing 6 conditions.
+
+- **Cost of the shared-memory setup itself (plain vs base): not resolved.** The
+  point estimate is 1.81 us/request (3.1% in req/s), but the CI includes zero.
+- **Recording with nobody reading (netfd-i, all-i): not distinguishable from
+  zero.** The all-i CI gives at most about 0.37 us per syscall, against 103.77 for
+  legacy-p8.
+- **With the collector exporting (netfd-ii, all-ii): a small cost is now
+  visible**, with CIs above zero.
+
+**Does "(ii) faster than base" disappear? Yes, in this run.** Under `powersave`
+all-ii was 104.1% of base. Here it is 94.2%, faster than base in 2 of 10 rounds,
+and netfd-ii is 96.7%, faster in 1 of 10.
+
+| condition | section 4 run (`powersave`), req/s | this run, req/s | change |
+|---|---|---|---|
+| base | 14,701.4 | 16,405.8 | +11.6% |
+| all-i | 14,359.3 | 16,071.0 | +11.9% |
+| all-ii | 15,302.8 | 15,456.6 | +1.0% |
+
+The conditions without a collector gained about 12% and all-ii almost nothing.
+That fits the hypothesis (collector polling keeps the CPU out of power-saving
+states). **It is not proven**: the governor, the stopped containers and the
+stopped `vmiinline` instance changed together, and the governor does not disable
+C-states. Separating them would need a run under `powersave` with the containers
+stopped.
+
+**Spans: Jaeger received all of them.** Counted with Jaeger's API per trial, after
+the collector had exited:
+
+| condition | records written by guest | records emitted | lost to overwrite | spans generated | Jaeger received | missing |
+|---|---|---|---|---|---|---|
+| netfd-ii (10 trials) | 67,978 | 60,282 | 7,696 (11.3%) | 72,254 | 72,254 | 0 |
+| all-ii (10 trials) | 142,618 | 68,455 | 74,163 (52.0%) | 75,102 | 75,102 | 0 |
+
+- Missing spans were 0 in each of the 20 trials, and no collector logged a
+  full `BatchSpanProcessor` queue. Spans generated = records + one root per
+  connection + one per event-loop window.
+- **All loss is between the guest ring and the collector**, none after it.
+  netfd-ii lost nothing in 2 of 10 trials, all-ii in none. These rows therefore
+  fail the per-trial `emitted = write_idx` check and are counted for throughput
+  only (`--throughput-only`). `offset_resets` was 0 in all 20, maximum
+  `offset_uncertainty` 996 us.
+- Correction made to the CSV: round 1 of netfd-ii and all-ii first counted 473 and
+  1,152 extra spans, exactly the counts of a smoke run minutes earlier under the
+  same instance names, still inside the query's time margin. They were recounted
+  from Jaeger for that round's time range (6,525 and 7,914, equal to generated),
+  and the tool now filters on each span's own start time.
 
 ### Summary
 
