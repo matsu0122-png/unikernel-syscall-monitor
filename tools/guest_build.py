@@ -53,6 +53,8 @@ GROUPS = {
     "time": ["TIME"],
     "all": ["ALL"],
 }
+DEFAULT_GROUPS = []         # Config.uk's defaults, nothing set by this tool
+GROUPS["default"] = DEFAULT_GROUPS
 
 # (upstream source block in ../Kraftfile, replacement key under vendor/)
 SOURCE_SWAPS = [
@@ -106,8 +108,9 @@ def kraftfile(vendor, groups, ring_order=None):
         lines = [f"  vmitrace:\n    source: {LIB_VMITRACE}\n    kconfig:\n",
                  "      CONFIG_LIBVMITRACE: 'y'\n"]
         lines += [f"      CONFIG_LIBVMITRACE_GROUP_{g}: 'y'\n" for g in groups]
-        if "ALL" not in groups and "NET" not in groups:
-            lines.append("      CONFIG_LIBVMITRACE_GROUP_NET: 'n'\n")
+        if groups != DEFAULT_GROUPS and "ALL" not in groups:
+            lines += [f"      CONFIG_LIBVMITRACE_GROUP_{g}: 'n'\n"
+                      for g in ("NET", "NETFD") if g not in groups]
         if ring_order is not None:
             lines.append(f"      CONFIG_LIBVMITRACE_RING_ORDER: {ring_order}\n")
         text = text.replace("\ntargets:", "".join(lines) + "\ntargets:")

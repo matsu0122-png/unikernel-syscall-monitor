@@ -67,10 +67,13 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
     beyond what overwrite loss explains.
 - Not done (need root): separate user and group `vmitrace`.
 
-## Waiting
+## 10-7 collector speed-up (done; README Phase 10-7 result)
 
-- **10-7 collector speed-up**: after 10-6, on request. Batch copy of the unread
-  range, then separate read and output threads, measuring loss after each under
-  the 10-5 conditions; report on a compiled reader if still not enough. Make
-  NETFD the default group (`Config.uk`, README). Base the time offset on data
-  from a recent fixed time window, and measure `offset_resets` over long runs.
+- Zero loss for NETFD and ALL at 1,350 requests: met. No compiled reader needed.
+- Default group NETFD: done.
+- Open:
+  - `offset_resets` per hour: 24 with the 60 s window, 37 without. Try a shorter
+    window (about 20 s or less, an estimate) or fitting the drift, then repeat the
+    one-hour run.
+  - One unexplained reset in a short trial (step 2 netfd-ii round 2).
+  - Reducing what is sent to Jaeger (README "Limits"), not decided.

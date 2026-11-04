@@ -202,6 +202,30 @@ def paired(path, ref="base"):
     return "\n".join(out)
 
 
+def collector(path):
+    """Loss and collector cost of the (ii) trials."""
+    rows = [r for r in csv.DictReader(open(path)) if num(r.get("emitted")) is not None]
+    by = defaultdict(list)
+    for r in rows:
+        by[r["condition"]].append(r)
+    out = ["| condition | output | trials with no loss | records | lost | loss % | collector CPU s (mean) | max RSS MiB (max) | reader CPU s | writer CPU s | peak unread (max, of capacity) | max poll gap ms | offset_resets |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for c, rs in by.items():
+        total = sum(num(r["write_idx"]) for r in rs)
+        lost = sum(num(r["lost"]) for r in rs)
+        out.append(
+            f"| {c} | {rs[0].get('output')} | {sum(num(r['lost']) == 0 for r in rs)}/{len(rs)} | "
+            f"{fmt(total, 0)} | {fmt(lost, 0)} | {fmt(100 * lost / total, 2)}% | "
+            f"{fmt(mean_sd([num(r['collector_cpu_s']) for r in rs])[0], 2)} | "
+            f"{fmt(max(num(r['collector_maxrss_kb']) for r in rs) / 1024, 1)} | "
+            f"{fmt(mean_sd([num(r['reader_cpu_s']) for r in rs])[0], 3)} | "
+            f"{fmt(mean_sd([num(r['writer_cpu_s']) for r in rs])[0], 3)} | "
+            f"{fmt(max(num(r['peak_unread']) for r in rs), 0)} | "
+            f"{fmt(max(num(r['max_poll_gap_ms']) for r in rs), 1)} | "
+            f"{fmt(sum(num(r['offset_resets']) for r in rs), 0)} |")
+    return "\n".join(out)
+
+
 def spans(path):
     rows = [r for r in csv.DictReader(open(path)) if num(r.get("spans_generated")) is not None]
     out = ["| condition | round | collector records | spans generated | Jaeger received | missing | missing % | queue-full logged |",
@@ -256,6 +280,9 @@ def main():
             print(paired(a.perf))
             print()
             print(spans(a.perf))
+            if "peak_unread" in open(a.perf).readline():
+                print()
+                print(collector(a.perf))
     if a.loss:
         print()
         print(loss(a.loss))

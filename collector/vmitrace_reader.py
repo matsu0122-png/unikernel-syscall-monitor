@@ -23,13 +23,13 @@ import mmap
 import os
 import struct
 from collections import Counter
-from dataclasses import dataclass
 from typing import List, Optional
 
 PAGE = 4096
 HDR_FMT = "<QIIIIQQQQQ"
 REC_FMT = "<QQQIHH6QqQ"
-REC_SIZE = struct.calcsize(REC_FMT)          # 96
+REC_STRUCT = struct.Struct(REC_FMT)
+REC_SIZE = REC_STRUCT.size                   # 96
 STATE_SIZE = 64
 BITMAP_BITS = 512
 F_ENTRY_ONLY = 1 << 0
@@ -76,19 +76,23 @@ class Manifest:
                               for s in m["bitmap"]["syscalls"]}
 
 
-@dataclass
 class Record:
-    lcpu_ring: int
-    idx: int
-    ts_enter_ns: int
-    ts_exit_ns: int
-    nr: int
-    lcpu: int
-    flags: int
-    args: tuple
-    ret: int
-    tid: int
-    unselected: bool = False
+    __slots__ = ("lcpu_ring", "idx", "ts_enter_ns", "ts_exit_ns", "nr", "lcpu",
+                 "flags", "args", "ret", "tid", "unselected")
+
+    def __init__(self, lcpu_ring, idx, ts_enter_ns, ts_exit_ns, nr, lcpu, flags,
+                 args, ret, tid, unselected=False):
+        self.lcpu_ring = lcpu_ring
+        self.idx = idx
+        self.ts_enter_ns = ts_enter_ns
+        self.ts_exit_ns = ts_exit_ns
+        self.nr = nr
+        self.lcpu = lcpu
+        self.flags = flags
+        self.args = args
+        self.ret = ret
+        self.tid = tid
+        self.unselected = unselected
 
 
 class GuestRing:
@@ -124,6 +128,7 @@ class GuestRing:
                        (self.ring_base, ring_len)]
         self.next_idx = [0] * manifest.nr_lcpu
         self.last_widx = [0] * manifest.nr_lcpu
+        self.peak_unread = [0] * manifest.nr_lcpu
 
     def close(self):
         self._hdr_map.close()
@@ -171,7 +176,13 @@ class GuestRing:
         return self._u64(self.man.ring["state_addr"] + lcpu * STATE_SIZE + 8)
 
     def poll(self, lcpu) -> List[Record]:
-        """Return the new valid records of one lcpu ring, oldest first."""
+        """Return the new valid records of one lcpu ring, oldest first.
+
+        The unread range is copied in one go and decoded from the copy. The
+        writer may lap the copy, so write_idx is read again afterwards: slots
+        below write_idx - capacity were overwritten by then, and the slot at
+        exactly that index is complete only if its seq still stands (the
+        writer zeroes seq first)."""
         cap = self.man.capacity
         c = self.counters
         widx = self.write_idx(lcpu)
@@ -187,32 +198,54 @@ class GuestRing:
             c["lost_overwritten"] += widx - cap - nxt
             nxt = widx - cap
         out = []
+        n = widx - nxt
+        if n <= 0:
+            self.next_idx[lcpu] = widx
+            return out
+        if n > self.peak_unread[lcpu]:
+            self.peak_unread[lcpu] = n
         base = (self.man.ring["records_addr"] - self.ring_base
                 + lcpu * cap * REC_SIZE)
-        for idx in range(nxt, widx):
-            off = base + (idx & (cap - 1)) * REC_SIZE
-            seq1 = struct.unpack_from("<Q", self._ring_map, off)[0]
-            raw = bytes(self._ring_map[off:off + REC_SIZE])
-            seq2 = struct.unpack_from("<Q", self._ring_map, off)[0]
-            f = struct.unpack(REC_FMT, raw)
-            if not (seq1 == seq2 == f[0] == idx + 1):
-                # The writer lapped us while we read (or the slot is junk).
-                if self.write_idx(lcpu) - cap > idx:
-                    c["lost_overwritten"] += 1
-                else:
-                    c["bad_seq"] += 1
+        first = nxt & (cap - 1)
+        head = min(n, cap - first)
+        m = self._ring_map
+        raw = bytes(m[base + first * REC_SIZE:base + (first + head) * REC_SIZE])
+        if n > head:
+            raw += bytes(m[base:base + (n - head) * REC_SIZE])
+        limit = self.write_idx(lcpu) - cap
+        selected = self.man.selected
+        append = out.append
+        idx = nxt
+        lost = bad = unselected = 0
+        for f in REC_STRUCT.iter_unpack(raw):
+            cur = idx
+            idx += 1
+            if cur < limit or (cur == limit and f[0] == idx and struct.unpack_from(
+                    "<Q", m, base + (cur & (cap - 1)) * REC_SIZE)[0] != idx):
+                lost += 1
                 continue
-            rec = Record(lcpu, idx, f[1], f[2], f[3], f[4], f[5],
-                         tuple(f[6:12]), f[12], f[13])
-            why = self._invalid(rec, lcpu)
-            if why:
-                c["invalid_" + why] += 1
+            if f[0] != idx:                 # slot is junk or still being written
+                bad += 1
                 continue
-            if rec.nr not in self.man.selected:
+            rec = Record(lcpu, cur, f[1], f[2], f[3], f[4], f[5], f[6:12], f[12],
+                         f[13])
+            # flags == 0 is the common case; _invalid decides everything else
+            if f[5] or f[3] >= BITMAP_BITS or f[4] != lcpu or f[1] > f[2]:
+                why = self._invalid(rec, lcpu)
+                if why:
+                    c["invalid_" + why] += 1
+                    continue
+            if f[3] not in selected:
                 rec.unselected = True
-                c["unselected_nr"] += 1
-            c["records_ok"] += 1
-            out.append(rec)
+                unselected += 1
+            append(rec)
+        if lost:
+            c["lost_overwritten"] += lost
+        if bad:
+            c["bad_seq"] += bad
+        if unselected:
+            c["unselected_nr"] += unselected
+        c["records_ok"] += len(out)
         self.next_idx[lcpu] = widx
         return out
 

@@ -24,6 +24,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
 - **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size. A supplementary run with the `performance` governor and unrelated containers stopped (section 7) gives the final cost figures: ALL with nobody reading +0.13 +/- 0.26 us per syscall, legacy Phase 8 103.8 us. The earlier "(ii) faster than base" result did not appear there, and Jaeger received every span the collector generated.
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
+- **Phase 10-7 (collector speed-up): zero-loss goal met, time offset not solved.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at 3,722 of 4,096 unread records, so the margin is thin. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The 60 s time-offset window only reduced `offset_resets` from 37 to 24 in one hour. The default group is now NETFD.
 
 ## Phase 1 result
 
@@ -817,7 +818,8 @@ itself is not modified. Details: `docs/phase10_1_guest_library.md`.
 - Layout, as decided for 10-0 §7:
   - Constant 64-byte header in a page-aligned PROGBITS `.vmitrace`.
   - 512-bit bitmap in `.rodata`, computed at compile time from
-    `LIBVMITRACE_GROUP_{ALL,NET,FILE,TIME}`.
+    `LIBVMITRACE_GROUP_{ALL,NET,FILE,TIME}` (NETFD added after 10-3, and the
+    default since 10-7).
   - Per-lcpu `write_idx`/`dropped` and the 96-byte records in a NOBITS
     `.bss.vmitrace_ring`.
   - Hook code in its own `.vmitrace_text`.
@@ -1752,6 +1754,166 @@ gap stays cumulative below the alert level, so slow loss still adds up.
   false-alert rate under load has been measured.
 - **Not tested: separate user and group `vmitrace`** (need root). Everything ran
   as one user.
+
+## Phase 10-7 result
+
+Goal: zero loss for NETFD and ALL under the conditions of the 10-5 supplementary
+run (1,350 requests, `ab -c 5`, standard 4,096-record ring), or numbers showing
+where the limit is. **Met in this workload.** A compiled reader (step 3 of the
+plan) was not needed.
+
+### Changes
+
+- **Step 1, bulk read** (`collector/vmitrace_reader.py`): the unread range is
+  copied at once and decoded with `struct.iter_unpack`. `write_idx` is read again
+  after the copy: slots the writer may have reached are counted as overwritten, so
+  a copy that the writer lapped is not trusted. JSONL is flushed per batch instead
+  of per line.
+- **Step 2, output thread** (`--output thread`, the default): the main thread
+  reads and validates, another writes JSONL and spans. Their queue is bounded
+  (`--output-queue`, 256 Ki records); beyond it records are dropped and counted as
+  `lost_output_queue`, because the guest decides the rate and must not decide how
+  much host memory is used. After a poll that read over 1/8 of the ring, the reader
+  sleeps 1 ms instead of 10 ms. The `BatchSpanProcessor` queue went from 2,048 to
+  65,536 spans.
+- **Time offset** (`--offset-window-s`, default 60): see below.
+- **Default group: NETFD** (`Config.uk`). A build with no group set selects the 22
+  NETFD syscalls (checked with `guest_build.py build default`).
+  `tools/guest_build.py` now switches NET and NETFD off explicitly for other groups.
+- New unit tests: writer lapping the copy, wrap-around, exactly full ring, output
+  queue, time window. Correctness after the change (3 fresh boots, ALL, measured
+  before the host was prepared): 307/307 names and 262/262 return values match the
+  strace from index 0.
+
+**GIL and garbage collection settings (thread mode only):**
+
+| setting | value | default | reason |
+|---|---|---|---|
+| `sys.setswitchinterval` | 1 ms | 5 ms | the reader must get the GIL back quickly: at 160,000 records/s the ring fills in about 26 ms, and it competes with the output and exporter threads |
+| `gc.set_threshold` | 100,000, 50, 100 | 700, 10, 10 | queued records are objects the collector would otherwise scan repeatedly, stopping the reader |
+
+They were chosen with the simulated guest (`tools/sim_ring.py`, 160,000 records/s,
+14,000 records, OTLP, 3 runs each, before the 1 ms reader sleep was added):
+
+| switch interval | gen0 threshold | loss % |
+|---|---|---|
+| 5 ms | 700 | 14.2, 19.0, 19.6 |
+| 1 ms | 700 | 0, 0, 7.7 |
+| 5 ms | 100,000 | 42.0, 16.3, 33.9 |
+| 1 ms | 100,000 | 0, 0, 0 |
+| 0.2 ms | 100,000 | 0, 0, 0 (more CPU, 1.9-2.1 s against about 1.8 s) |
+
+The GC setting alone made things worse here; only the combination was clean.
+
+### Host state
+
+`performance` governor on all 8 CPUs, only `vmitrace-jaeger-1` running, no other
+QEMU, `vmstat` idle 99-100%, 2 login sessions, load average 1.44-2.73. 2026-11-04,
+step 1 14:05-14:09, step 2 14:09-14:15, long run 14:15-15:15 JST. Records:
+`logs/bench_p10_raw/p107_*/host_{before,after}.json`. Raw data is not committed;
+CSVs: `logs/bench_p10_7_step1.csv`, `logs/bench_p10_7_step2.csv`,
+`logs/bench_p10_7_longrun.csv`. No failed requests in any trial.
+
+### Loss and collector cost, step by step
+
+10 trials per row. "10-5" is section 7 of the Phase 10-5 result.
+
+| condition | code | trials with no loss | records | lost | loss % | collector CPU s per trial | max RSS MiB | peak unread (of 4,096) | max poll gap ms | Jaeger missing |
+|---|---|---|---|---|---|---|---|---|---|---|
+| netfd-ii | 10-5 | 2/10 | 67,978 | 7,696 | 11.3% | 0.91 | not recorded | not recorded | not recorded | 0 |
+| netfd-ii | step 1 | 1/10 | 67,990 | 5,360 | 7.88% | 0.89 | 70.0 | 4,096 | 200.2 | 0 |
+| netfd-ii | step 2 | **10/10** | 67,982 | **0** | **0%** | 0.97 | 61.0 | 2,716 | 32.9 | 0 |
+| all-ii | 10-5 | 0/10 | 142,618 | 74,163 | 52.0% | 0.95 | not recorded | not recorded | not recorded | 0 |
+| all-ii | step 1 | 0/10 | 141,010 | 55,524 | 39.4% | 1.10 | 74.8 | 4,096 | 134.0 | 0 |
+| all-ii | step 2 | **10/10** | 141,160 | **0** | **0%** | 1.72 | 61.6 | 3,722 | 28.2 | 0 |
+
+- CPU in step 2 is for about twice as many records as 10-5 in ALL. Of the 1.72 s,
+  the reader thread used 0.14 s and the output thread 0.76 s; the rest is other
+  threads (mainly the exporter, not measured separately). Both figures include
+  startup: a short NETFD smoke trial with 70 requests used 0.20 s in total.
+- Span counts in Jaeger equal the generated counts in all 40 (ii) trials, without
+  a queue-full message. Generated in step 2: NETFD 81,495, ALL 154,969.
+- **The margin is thin for ALL**: the ring peaked at 3,722 of 4,096 (91%), and the
+  worst poll gap (28.2 ms) is about the time the ring takes to fill at the peak
+  rate. Zero loss in 20 trials does not prove it cannot happen.
+
+### Cost with every record processed
+
+Added us per syscall (method 2), and paired us/request against base in the same
+session. The 10-5 row is the value with loss.
+
+| condition | 10-5, with loss | step 2, nothing lost |
+|---|---|---|
+| netfd-ii, us/syscall | +0.21 +/- 0.27 | **+0.45 +/- 0.45** |
+| netfd-ii, us/request (95% CI) | +2.13 (0.28 to 3.97) | +4.57 (1.16 to 7.98) |
+| all-ii, us/syscall | +0.36 +/- 0.27 | **+0.31 +/- 0.19** |
+| all-ii, us/request (95% CI) | +3.82 (0.96 to 6.68) | +3.16 (0.51 to 5.82) |
+
+Processing every record did not clearly raise the guest-side cost: the intervals
+overlap in both rows. netfd-ii coming out above all-ii, which records twice as
+much, is within the noise (netfd-ii had one low trial, 12,990 req/s, and an sd of
+979 req/s), and the cause was not investigated. For reference, in the same step 2
+session: netfd-i +0.14 +/- 0.33 and all-i +0.05 +/- 0.25 us/syscall, both CIs
+including zero.
+
+### Time offset: not solved by the 60 s window
+
+`longrun`: one NETFD instance, one request per 3 s for 3,602 s (1,194 requests, 0
+failed, 8,405 records), read by two collectors at once, `--otel none`:
+
+| offset from | `offset_resets` | offset change over the run | final uncertainty | collector CPU s | max RSS MiB |
+|---|---|---|---|---|---|
+| last 60 s | **24** | 92.1 ms | 545 us | 14.4 | 17.9 |
+| all data (as up to 10-6) | **37** | 91.7 ms | 497 us | 14.8 | 17.6 |
+
+- **Cause: clock drift, about 26 ppm** between guest and host in this run, or 1.5 ms
+  per 60 s. The intersection is usually under 1 ms wide, so even 60 s of drift
+  moves the offset out of it. This also fits the 4 resets of the 10-6 live run, but
+  that run was not measured for drift.
+- **A window of 60 s is too long for this drift.** The unit test with simulated
+  drift showed 0 resets because its polls had 10 ms intervals and no narrowing;
+  the real run did not behave that way. Roughly 0.5 ms / 26 ppm suggests about 20 s
+  or less (**estimate**, not measured). Fitting the drift would be the alternative.
+- A reset is not an error: the estimator restarts from the newest interval, and
+  both collectors tracked the same drift within 0.4 ms over the hour. Two records
+  either side of a reset can be off from each other by the size of the jump; that
+  size was not measured.
+- **1 reset in a short trial is unexplained** (step 2 netfd-ii round 2, 1 of 20,
+  drift cannot cause it in a few seconds). No result here uses that trial's
+  timestamps, and plan item 8 requires an explanation before they are used.
+
+### Limits
+
+- **OTLP export tops out at about 10,000 spans/s (simulated guest).** 14,000 spans
+  took about 1.35 s to drain, and at 30,000 records/s with a 20,000-record queue
+  47% was dropped as `lost_output_queue`. **Under sustained high load the collector
+  loses records.** The 1,350-request runs pass because they are bursts of under 0.1 s
+  that the queue absorbs: the default queue holds about 26 s of backlog at that
+  output rate.
+- **The reader has limits too (simulated guest, no OTel):** 150,000 records/s for
+  100,000 records lost 3.89% to overwrite. In 14,000-record bursts with OTLP, there
+  was no loss up to 300,000 records/s, and 12.66% in 1 of 3 runs at 400,000.
+- **Why sustained limits come only from the simulated guest:** this nginx build
+  falls over at about 1,500 requests per instance (known issue, see Phase 10-5), so
+  the real guest cannot sustain load for longer than these bursts. The simulated
+  guest follows the same record protocol but is not a real workload, so these
+  numbers locate the limit and are not results for nginx.
+- The output queue trades memory for burst tolerance. Peak RSS in these runs was
+  61.6 MiB, with up to 13,745 records queued. A full 256 Ki queue was not measured.
+- The threads share the GIL, so reader latency still depends on the output work.
+
+**To consider later: sending less to Jaeger.** None of these is implemented.
+
+- Send only connection traces and errors. Event-loop spans made up most of the
+  count in the 10-6 run (522 of 735 record spans).
+- Merge spans, for example one span per connection with its syscalls as events or
+  attributes.
+- Sample, for example a fraction of connections, always keeping errors.
+
+These affect only what goes to Jaeger. JSONL output is limited far less (about
+190,000 records/s of output-thread CPU in the simulated guest, without OTel).
+Each option loses detail in Jaeger, so the choice depends on what the traces are
+used for.
 
 ## Notes for later phases
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vmitrace collector (Phase 10-3): guest ring -> JSONL + OpenTelemetry.
+"""vmitrace collector (Phase 10-3, 10-7): guest ring -> JSONL + OpenTelemetry.
 
     collector/.venv/bin/python collector/vmitrace_collector.py \\
         --manifest <build>/manifest.json --instance <name> \\
@@ -31,14 +31,23 @@ pidfile). The collector:
 The JSONL file is capped (--max-jsonl-mb): when it reaches the cap it is
 rotated to .1 (one generation), so disk use stays <= 2x the cap whatever the
 guest does.
+
+The main thread only reads and validates. With --output thread (default),
+another thread writes JSONL and spans, so slow output does not delay reading.
+Their queue is bounded (--output-queue records): beyond it records are dropped
+and counted as lost_output_queue, because the guest decides the rate and must
+not decide how much host memory is used.
 """
 
 import argparse
 import errno as errno_mod
+import gc
 import json
 import os
 import signal
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -47,11 +56,15 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))          # syscall_table.py
 
 from syscall_table import SYSCALL_TABLE  # noqa: E402
-from timesync import OffsetEstimator  # noqa: E402
+from timesync import DEFAULT_WINDOW_NS, OffsetEstimator  # noqa: E402
 from vmitrace_reader import (F_ENTRY_ONLY, F_NO_ENTER_TS, GuestRing,  # noqa: E402
                              Manifest)
 
 DEFAULT_SHM_DIR = "/dev/shm/vmitrace"
+OTEL_QUEUE = 65536           # spans; BatchSpanProcessor's default is 2048
+GIL_SWITCH_S = 0.001
+GC_GEN0 = 100_000
+BUSY_POLL_S = 0.001          # sleep after a poll that read over 1/8 of the ring
 
 
 def log(msg):
@@ -62,7 +75,7 @@ class CappedWriter:
     def __init__(self, path, max_bytes):
         self.path = Path(path)
         self.max_bytes = max_bytes
-        self.f = open(self.path, "a", buffering=1)
+        self.f = open(self.path, "a")
         self.size = self.f.tell()
         self.rotations = 0
 
@@ -70,14 +83,78 @@ class CappedWriter:
         if self.size + len(line) > self.max_bytes:
             self.f.close()
             os.replace(self.path, self.path.with_name(self.path.name + ".1"))
-            self.f = open(self.path, "w", buffering=1)
+            self.f = open(self.path, "w")
             self.size = 0
             self.rotations += 1
         self.f.write(line)
         self.size += len(line)
 
+    def flush(self):
+        self.f.flush()
+
     def close(self):
         self.f.close()
+
+
+class InlineOutput:
+    """Output on the reading thread."""
+
+    def __init__(self, write):
+        self.write = write
+        self.peak_queued = 0
+        self.error = None
+        self.cpu_s = None
+
+    def put(self, recs, offset, unanchored):
+        self.write(recs, offset, unanchored)
+
+    def close(self):
+        pass
+
+
+class ThreadOutput(threading.Thread):
+    """Output on its own thread. `put` never waits. queued = put_records -
+    done_records, each advanced by one thread only, so no lock is needed; a
+    stale read only makes the bound slightly inexact."""
+
+    def __init__(self, write, max_records, counters):
+        super().__init__(name="output", daemon=True)
+        self.write = write
+        self.max_records = max_records
+        self.counters = counters
+        self.q = queue.SimpleQueue()
+        self.put_records = 0
+        self.done_records = 0
+        self.peak_queued = 0
+        self.error = None
+        self.cpu_s = None
+        self.start()
+
+    def put(self, recs, offset, unanchored):
+        queued = self.put_records - self.done_records
+        if queued + len(recs) > self.max_records:
+            self.counters["lost_output_queue"] += len(recs)
+            return
+        self.put_records += len(recs)
+        self.peak_queued = max(self.peak_queued, queued + len(recs))
+        self.q.put((recs, offset, unanchored))
+
+    def run(self):
+        try:
+            while True:
+                item = self.q.get()
+                if item is None:
+                    return
+                self.write(*item)
+                self.done_records += len(item[0])
+        except Exception as e:     # reported by the main thread
+            self.error = e
+        finally:
+            self.cpu_s = time.thread_time()
+
+    def close(self):
+        self.q.put(None)
+        self.join()
 
 
 class Names:
@@ -110,7 +187,8 @@ def setup_otel(kind, manifest, instance, endpoint, dump_path):
     else:
         from file_exporter import JsonLinesSpanExporter
         exporter = JsonLinesSpanExporter(dump_path)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(BatchSpanProcessor(exporter,
+                                                   max_queue_size=OTEL_QUEUE))
     return provider, provider.get_tracer("vmitrace.collector")
 
 
@@ -149,11 +227,22 @@ def main():
     ap.add_argument("--otlp-endpoint", default="localhost:4317")
     ap.add_argument("--otel-file", help="span dump for --otel file")
     ap.add_argument("--poll-ms", type=float, default=10.0)
+    ap.add_argument("--output", choices=("thread", "inline"), default="thread")
+    ap.add_argument("--output-queue", type=int, default=256 * 1024,
+                    help="records waiting for output before new ones are dropped")
+    ap.add_argument("--offset-window-s", type=float,
+                    default=DEFAULT_WINDOW_NS / 1e9,
+                    help="time offset from the last N s of data; 0 = all data")
     ap.add_argument("--stats", help="write final statistics JSON here")
     ap.add_argument("--wait-s", type=float, default=60.0,
                     help="how long to wait for the file / a valid header")
     args = ap.parse_args()
 
+    if args.output == "thread":
+        # The reader must get the GIL back quickly, and collections over the
+        # queued records would stop it (measured with tools/sim_ring.py).
+        sys.setswitchinterval(GIL_SWITCH_S)
+        gc.set_threshold(GC_GEN0, 50, 100)
     man = Manifest(args.manifest)
     names = Names(man)
 
@@ -213,7 +302,7 @@ def main():
         tb = TraceBuilder(tracer)
 
     out = CappedWriter(args.jsonl, int(args.max_jsonl_mb * 1024 * 1024))
-    est = OffsetEstimator()
+    est = OffsetEstimator(int(args.offset_window_s * 1e9) or None)
     pending = []             # records seen before the offset was anchored
     max_pending = 4 * man.capacity * man.nr_lcpu
     stop = False
@@ -230,6 +319,7 @@ def main():
         return r.ts_enter_ns if r.flags & F_ENTRY_ONLY else r.ts_exit_ns
 
     def take(recs, fresh, t_lo, t_hi):
+        nonlocal pending
         if fresh and recs:
             est.update([guest_t(r) for r in recs], t_lo, t_hi)
         offset = est.offset
@@ -240,9 +330,9 @@ def main():
                 del pending[:len(pending) - max_pending]
             return
         if pending:
-            write(pending, offset, False)
-            pending.clear()
-        write(recs, offset, False)
+            output.put(pending, offset, False)
+            pending = []
+        output.put(recs, offset, False)
 
     def write(recs, offset, unanchored):
         nonlocal emitted
@@ -273,6 +363,12 @@ def main():
             if tb is not None:
                 tb.add(r, name, start, end, args_hex)
             emitted += 1
+        out.flush()
+
+    if args.output == "thread":
+        output = ThreadOutput(write, args.output_queue, ring.counters)
+    else:
+        output = InlineOutput(write)
 
     t_prev = None            # host time just before the previous poll
 
@@ -284,11 +380,23 @@ def main():
             recs.extend(ring.poll(lcpu))
         take(recs, fresh and t_prev is not None, t_prev, time.time_ns())
         t_prev = t_start
+        return len(recs)
 
     poll_s = args.poll_ms / 1000
     qemu_gone = False
     prev_ok = False          # previous poll succeeded -> new records are fresh
+    max_gap_ns = 0
+    t_loop = None
+    got = 0
+    busy_records = man.capacity * man.nr_lcpu // 8
+    adaptive = args.output == "thread"
     while not stop:
+        if output.error is not None:
+            break
+        now = time.monotonic_ns()
+        if t_loop is not None:
+            max_gap_ns = max(max_gap_ns, now - t_loop)
+        t_loop = now
         st = ring.header_status()
         if st != "ok":
             ring.counters["header_mismatch_polls"] += 1
@@ -297,14 +405,15 @@ def main():
                     "not reading records until it does")
                 header_bad = True
             prev_ok = False
+            got = 0
         else:
             header_bad = False
-            poll_all(prev_ok)
+            got = poll_all(prev_ok)
             prev_ok = True
         if pid is not None and not pid_alive(pid):
             qemu_gone = True
             break
-        time.sleep(poll_s)
+        time.sleep(BUSY_POLL_S if got > busy_records and adaptive else poll_s)
 
     # final drain: the mapping stays valid even after QEMU exits
     if ring.header_status() == "ok":
@@ -313,8 +422,12 @@ def main():
         # never anchored: upper bound from the newest pending record
         ub = time.time_ns() - max(guest_t(r) for r in pending)
         ring.counters["time_unanchored"] += len(pending)
-        write(pending, ub, True)
-        pending.clear()
+        output.put(pending, ub, True)
+        pending = []
+    reader_cpu_s = time.thread_time()
+    output.close()
+    if output.error is not None:
+        log(f"output failed: {output.error!r}")
 
     if tb is not None:
         tb.flush()
@@ -333,6 +446,14 @@ def main():
         "offset_uncertainty_ns": est.uncertainty,
         "offset_samples": est.samples,
         "offset_resets": est.resets,
+        "offset_window_s": args.offset_window_s,
+        "offset_history": est.history,
+        "output": args.output,
+        "reader_cpu_s": reader_cpu_s,
+        "writer_cpu_s": output.cpu_s,
+        "peak_unread": ring.peak_unread,
+        "peak_output_queue": output.peak_queued,
+        "max_poll_gap_ms": max_gap_ns / 1e6,
         "jsonl_rotations": out.rotations,
         "traces": tb.stats if tb is not None else None,
         "qemu_exited": qemu_gone,
@@ -351,7 +472,7 @@ def main():
     log("stats " + json.dumps(stats))
     if args.stats:
         Path(args.stats).write_text(json.dumps(stats, indent=2) + "\n")
-    return 0
+    return 1 if output.error is not None else 0
 
 
 if __name__ == "__main__":

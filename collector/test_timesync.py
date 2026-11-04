@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from timesync import OffsetEstimator  # noqa: E402
 
 MS = 1_000_000
+S = 1_000_000_000
 
 
 def simulate(true_offset, writes_host, poll_ns, jitter_ns=0, seed=1):
@@ -81,6 +82,48 @@ class OffsetEstimatorTest(unittest.TestCase):
             # never worse than one polling interval (+ jitter + poll time)
             self.assertLessEqual(est.uncertainty, poll + poll // 5)
             self.assertEqual(est.resets, 0)
+
+    def _drift(self, window_ns, ppm=50, hours=1):
+        """Guest clock runs fast by `ppm`; one record per 3 s, 10 ms polling."""
+        e = OffsetEstimator(window_ns)
+        for t in range(0, hours * 3600, 3):
+            host = 1000 * S + t * S
+            guest = int((host - 1000 * S) * (1 + ppm / 1e6))
+            e.update([guest], host - 5 * MS, host + 5 * MS)
+        return e
+
+    def test_window_absorbs_drift_that_resets_without_it(self):
+        self.assertGreater(self._drift(None).resets, 0)
+        self.assertEqual(self._drift(60 * S).resets, 0)
+
+    def test_window_follows_the_current_offset(self):
+        e = self._drift(60 * S)
+        host, guest = 1000 * S + 3597 * S, int(3597 * S * (1 + 50 / 1e6))
+        self.assertLess(abs(e.offset - (host - guest)), 10 * MS)
+        self.assertGreater(len(e.history), 50)
+
+    def test_window_forgets_old_intervals(self):
+        e = OffsetEstimator(10 * S)
+        e.update([0], 0, 1 * MS)                   # narrow, soon expired
+        e.update([5 * S], 5 * S, 5 * S + 9 * MS)
+        self.assertEqual(e.resets, 0)
+        self.assertEqual((e.lo, e.hi), (0, 1 * MS))
+        e.update([40 * S], 40 * S, 40 * S + 9 * MS)
+        self.assertEqual(e.hi - e.lo, 9 * MS)      # only the last interval
+
+    def test_batch_equals_records_one_by_one(self):
+        a, b = OffsetEstimator(), OffsetEstimator()
+        a.update([100, 150, 180], 150, 300)
+        for g in (100, 150, 180):
+            b.update([g], 150, 300)
+        self.assertEqual((a.lo, a.hi, a.samples, a.resets),
+                         (b.lo, b.hi, b.samples, b.resets))
+
+    def test_batch_wider_than_its_interval_resets(self):
+        e = OffsetEstimator()
+        e.update([0, 500], 100, 200)
+        self.assertEqual(e.resets, 1)
+        self.assertEqual((e.lo, e.hi), (100 - 500, 200 - 500))
 
     def test_backlog_is_not_used(self):
         # Records written long before the first poll are not fresh: the

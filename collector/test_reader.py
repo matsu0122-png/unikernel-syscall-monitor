@@ -197,6 +197,69 @@ class ReaderTest(unittest.TestCase):
         r.poll(0)
         self.assertEqual(r.counters["write_idx_implausible"], 1)
 
+    def _poll_while_writer_moves(self, move):
+        """Poll with `move` running after the copy, before write_idx is read
+        again: the writer lapped a copy that still looks valid."""
+        r = self.g.ring()
+        real = r.write_idx
+        calls = []
+
+        def write_idx(lcpu):
+            calls.append(lcpu)
+            if len(calls) == 2:
+                move()
+            return real(lcpu)
+        r.write_idx = write_idx
+        return r, r.poll(0)
+
+    def test_writer_laps_the_copy(self):
+        self.g.header()
+        for i in range(8):
+            self.g.rec(i)
+        self.g.widx(8)
+
+        def move():
+            self.g.rec(8)
+            self.g.rec(9)
+            self.g.widx(10)
+        r, got = self._poll_while_writer_moves(move)
+        # 0 and 1 were overwritten; 2 is the next slot, untouched so far
+        self.assertEqual([x.idx for x in got], list(range(2, 8)))
+        self.assertEqual(r.counters["lost_overwritten"], 2)
+        self.assertEqual(r.counters["bad_seq"], 0)
+
+    def test_writer_started_on_the_oldest_slot(self):
+        self.g.header()
+        for i in range(8):
+            self.g.rec(i)
+        self.g.widx(8)
+        # write_idx unchanged, but the writer has zeroed seq of slot 0
+        r, got = self._poll_while_writer_moves(lambda: self.g.rec(0, seq=0))
+        self.assertEqual([x.idx for x in got], list(range(1, 8)))
+        self.assertEqual(r.counters["lost_overwritten"], 1)
+
+    def test_exactly_full_ring_loses_nothing(self):
+        self.g.header()
+        for i in range(8):
+            self.g.rec(i)
+        self.g.widx(8)
+        r = self.g.ring()
+        self.assertEqual(len(r.poll(0)), 8)
+        self.assertEqual(r.counters["lost_overwritten"], 0)
+        self.assertEqual(r.peak_unread, [8])
+
+    def test_range_wrapping_the_ring_end(self):
+        self.g.header()
+        for i in range(6):
+            self.g.rec(i)
+        self.g.widx(6)
+        r = self.g.ring()
+        r.poll(0)
+        for i in range(6, 11):
+            self.g.rec(i)
+        self.g.widx(11)
+        self.assertEqual([x.idx for x in r.poll(0)], list(range(6, 11)))
+
     def test_short_file_rejected(self):
         with open(self.g.path, "r+b") as f:
             f.truncate(RECS)

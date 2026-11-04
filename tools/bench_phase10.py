@@ -22,10 +22,15 @@ loss  ring capacity x collector poll interval x load: ALL builds with
       ~1,500 at which this nginx build falls over). Collector --otel none,
       started before boot.
 
+longrun  one NETFD instance with light traffic, read by two collectors at once
+      (time offset from the last 60 s / from all data), to compare offset_resets.
+      One request per --interval s; keep the total under the ~1,500 limit.
+
 All instances listen on :8090 (the long-running `vmiinline` holds :8080).
 
     python3 tools/bench_phase10.py perf --rounds 5 --csv logs/bench_p10_perf.csv
     python3 tools/bench_phase10.py loss --csv logs/bench_p10_loss.csv
+    python3 tools/bench_phase10.py longrun --seconds 3600 --interval 3
 """
 
 import argparse
@@ -162,13 +167,14 @@ def stop(name):
                    stderr=subprocess.DEVNULL)
 
 
-def start_collector(name, manifest, raw, tag, otel, poll_ms):
+def start_collector(name, manifest, raw, tag, otel, poll_ms, extra=()):
     args = [str(VENV_PY), str(COLLECTOR), "--manifest", str(manifest),
             "--instance", name, "--jsonl", str(raw / f"{tag}.jsonl"),
             "--stats", str(raw / f"{tag}.stats.json"), "--poll-ms", str(poll_ms),
             "--otel", otel]
     if otel == "otlp":
         args += ["--otlp-endpoint", "localhost:14317"]
+    args += list(extra)
     return subprocess.Popen(args, stdout=subprocess.DEVNULL,
                             stderr=open(raw / f"{tag}.collector.log", "w"))
 
@@ -179,11 +185,13 @@ def wait_collector(p, timeout=60):
         pid, status, ru = os.wait4(p.pid, os.WNOHANG)
         if pid:
             p.returncode = os.waitstatus_to_exitcode(status)
+            p.maxrss_kb = ru.ru_maxrss
             return p.returncode, ru.ru_utime + ru.ru_stime
         time.sleep(0.1)
     p.send_signal(signal.SIGINT)
     _, status, ru = os.wait4(p.pid, 0)
     p.returncode = os.waitstatus_to_exitcode(status)
+    p.maxrss_kb = ru.ru_maxrss
     return p.returncode, ru.ru_utime + ru.ru_stime
 
 
@@ -260,7 +268,7 @@ def jaeger_settled(instance, t_start, timeout=30):
 
 # --- perf ---
 
-def perf_trial(cond, spec, rnd, raw, group, requests=300):
+def perf_trial(cond, spec, rnd, raw, group, requests=300, extra=()):
     tag = f"{cond}_r{rnd}"
     name = f"p10{cond.replace('-', '')}r{rnd}"
     row = {"condition": cond, "round": rnd, "req_per_s": None,
@@ -271,6 +279,9 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
            "requests_seen": None, "boot_records": None,
            "entry_hits": None, "spans_generated": None, "jaeger_spans": None,
            "spans_missing": None, "jaeger_traces": None, "otel_queue_full": None,
+           "collector_maxrss_kb": None, "output": None, "reader_cpu_s": None, "writer_cpu_s": None,
+           "peak_unread": None, "peak_output_queue": None, "max_poll_gap_ms": None,
+           "lost_output_queue": None,
            "note": ""}
     problems = []
     coll = None
@@ -278,7 +289,7 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
     if spec["kind"] == "vmitrace":
         manifest = BUILD_ROOT / spec["build"] / ".unikraft/build/manifest.json"
         if spec["read"]:
-            coll = start_collector(name, manifest, raw, tag, "otlp", 10)
+            coll = start_collector(name, manifest, raw, tag, "otlp", 10, extra)
             time.sleep(0.3)
         kraft_run_vmitrace(name, spec["build"], group, spec.get("wrapper", True))
     else:
@@ -312,6 +323,7 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
     if coll is not None:
         rc, cpu = wait_collector(coll)
         row["collector_cpu_s"] = round(cpu, 3)
+        row["collector_maxrss_kb"] = coll.maxrss_kb
         st_path = raw / f"{tag}.stats.json"
         if rc != 0 or not st_path.exists():
             problems.append(f"collector rc={rc}")
@@ -322,9 +334,16 @@ def perf_trial(cond, spec, rnd, raw, group, requests=300):
                           or k in ("bad_seq", "write_idx_regress",
                                    "write_idx_implausible"))
             row.update(write_idx=st["write_idx"][0], emitted=st["emitted"],
-                       lost=c.get("lost_overwritten", 0) + c.get("bad_seq", 0),
+                       lost=c.get("lost_overwritten", 0) + c.get("bad_seq", 0)
+                       + c.get("lost_output_queue", 0),
                        rejects=rejects, offset_resets=st["offset_resets"],
-                       offset_uncertainty_ns=st["offset_uncertainty_ns"])
+                       offset_uncertainty_ns=st["offset_uncertainty_ns"],
+                       output=st["output"], reader_cpu_s=round(st["reader_cpu_s"], 3),
+                       writer_cpu_s=st["writer_cpu_s"] and round(st["writer_cpu_s"], 3),
+                       peak_unread=st["peak_unread"][0],
+                       peak_output_queue=st["peak_output_queue"],
+                       max_poll_gap_ms=round(st["max_poll_gap_ms"], 1),
+                       lost_output_queue=c.get("lost_output_queue", 0))
             evs = [json.loads(l) for l in open(raw / f"{tag}.jsonl")]
             acc = [e for e in evs if e["syscall"] == "accept4"]
             row["accept4"] = sum((e["ret"] or 0) >= 0 for e in acc)
@@ -381,12 +400,54 @@ def cmd_perf(args):
         for cond in conds:
             log(f"round {rnd}/{args.rounds} {cond}")
             row = perf_trial(cond, PERF_CONDITIONS[cond], rnd, raw, args.group,
-                             args.requests)
+                             args.requests, args.collector_arg)
             log(f"  -> {row}")
             rows.append(row)
             write_csv(args.csv, rows)
     (raw / "host_after.json").write_text(json.dumps(host_state(), indent=2))
     log(f"wrote {args.csv}")
+
+
+# --- long run ---
+
+def cmd_longrun(args):
+    raw = REPO / "logs" / "bench_p10_raw" / args.raw_name
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "host_before.json").write_text(json.dumps(host_state(), indent=2))
+    name = "p10long"
+    manifest = BUILD_ROOT / args.build / ".unikraft/build/manifest.json"
+    colls = {f"window{w}": start_collector(
+        name, manifest, raw, f"window{w}", "none", 10, ["--offset-window-s", str(w)])
+        for w in (60, 0)}
+    time.sleep(0.3)
+    kraft_run_vmitrace(name, args.build, args.group)
+    time.sleep(BOOT_SETTLE_S)
+    t0 = time.monotonic()
+    sent = failed = 0
+    try:
+        while time.monotonic() - t0 < args.seconds:
+            r = subprocess.run(["curl", "-s", "-m", "5", "-o", "/dev/null", URL])
+            sent += 1
+            failed += r.returncode != 0
+            time.sleep(args.interval)
+    finally:
+        elapsed = time.monotonic() - t0
+        stop(name)
+    rows = []
+    for tag, coll in colls.items():
+        rc, cpu = wait_collector(coll)
+        st = json.loads((raw / f"{tag}.stats.json").read_text())
+        hist = st["offset_history"]
+        rows.append({
+            "collector": tag, "rc": rc, "seconds": round(elapsed), "requests": sent,
+            "failed": failed, "emitted": st["emitted"], "write_idx": st["write_idx"][0],
+            "offset_resets": st["offset_resets"], "offset_samples": st["offset_samples"],
+            "offset_uncertainty_ns": st["offset_uncertainty_ns"],
+            "offset_drift_ns": hist[-1][1] - hist[0][1] if len(hist) > 1 else None,
+            "collector_cpu_s": round(cpu, 3), "collector_maxrss_kb": coll.maxrss_kb})
+        log(f"  -> {rows[-1]}")
+    write_csv(args.csv, rows)
+    (raw / "host_after.json").write_text(json.dumps(host_state(), indent=2))
 
 
 # --- loss ---
@@ -454,7 +515,7 @@ def cmd_correct(args):
     """N fresh boots of the ALL build, collector started before boot, one
     curl (the workload of logs/strace_ground_truth.log), then the offset-0
     comparison of tools/compare_strace.py."""
-    raw = REPO / "logs" / "bench_p10_raw" / "correct"
+    raw = REPO / "logs" / "bench_p10_raw" / args.raw_name
     raw.mkdir(parents=True, exist_ok=True)
     manifest = BUILD_ROOT / "all" / ".unikraft/build/manifest.json"
     rows = []
@@ -515,6 +576,8 @@ def main():
                    help="measured requests per trial (+50 warmup); keep the "
                         "total under ~1,500 per instance")
     p.add_argument("--raw-name", default="perf")
+    p.add_argument("--collector-arg", action="append", default=[],
+                   help="extra collector argument, e.g. --collector-arg=--output=inline")
     l = sub.add_parser("loss")
     l.add_argument("--poll-ms", type=float, nargs="*", default=[1, 10, 100])
     l.add_argument("--concurrency", type=int, nargs="*", default=[1, 5, 20])
@@ -522,9 +585,17 @@ def main():
     l.add_argument("--csv", default=str(REPO / "logs" / "bench_p10_loss.csv"))
     c = sub.add_parser("correct")
     c.add_argument("--boots", type=int, default=10)
+    c.add_argument("--raw-name", default="correct")
     c.add_argument("--csv", default=str(REPO / "logs" / "bench_p10_correct.csv"))
+    g = sub.add_parser("longrun")
+    g.add_argument("--seconds", type=float, default=3600)
+    g.add_argument("--interval", type=float, default=3)
+    g.add_argument("--build", default="netfd")
+    g.add_argument("--raw-name", default="longrun")
+    g.add_argument("--csv", default=str(REPO / "logs" / "bench_p10_7_longrun.csv"))
     args = ap.parse_args()
-    {"perf": cmd_perf, "loss": cmd_loss, "correct": cmd_correct}[args.cmd](args)
+    {"perf": cmd_perf, "loss": cmd_loss, "correct": cmd_correct,
+     "longrun": cmd_longrun}[args.cmd](args)
 
 
 if __name__ == "__main__":

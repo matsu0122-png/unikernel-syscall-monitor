@@ -1,0 +1,31 @@
+condition,round,req_per_s,mean_latency_ms,failed_requests,valid,write_idx,emitted,lost,rejects,offset_resets,offset_uncertainty_ns,collector_cpu_s,accept4,accept4_failed,requests_seen,boot_records,entry_hits,spans_generated,jaeger_spans,spans_missing,jaeger_traces,otel_queue_full,collector_maxrss_kb,output,reader_cpu_s,writer_cpu_s,peak_unread,peak_output_queue,max_poll_gap_ms,lost_output_queue,note
+base,1,16898.26,0.296,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,1,14821.91,0.337,0.0,False,6797,6298,499,0,0,822928,0.899,1251,0,1250,47,,7550,7550,0,1252,False,69916,inline,0.508,,4096,0,144.9,0,"emitted 6298 != write_idx 6797; requests_seen=1250, expected 1350"
+all-ii,1,15181.24,0.329,0.0,False,14372,8990,5382,0,0,894170,1.138,849,0,849,291,,9859,9859,0,869,False,76412,inline,0.613,,4096,0,45.4,0,"emitted 8990 != write_idx 14372; requests_seen=849, expected 1350"
+base,2,16995.24,0.294,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,2,16317.92,0.306,0.0,True,6797,6797,0,0,0,230589,0.965,1350,0,1350,47,,8148,8148,0,1351,False,71672,inline,0.538,,3475,0,32.2,0,
+all-ii,2,15080.16,0.332,0.0,False,14550,9015,5535,0,0,335656,1.152,839,0,840,291,,9874,9874,0,859,False,76420,inline,0.632,,4096,0,52.1,0,"emitted 9015 != write_idx 14550; requests_seen=840, expected 1350"
+base,3,16773.54,0.298,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,3,16261.99,0.307,0.0,False,6797,6553,244,0,0,734721,0.922,1300,0,1302,47,,7854,7854,0,1301,False,67412,inline,0.526,,4096,0,178.6,0,"emitted 6553 != write_idx 6797; requests_seen=1302, expected 1350"
+all-ii,3,16101.86,0.311,0.0,False,13943,6119,7824,0,0,123526,0.838,581,0,580,291,,6714,6714,0,595,False,65724,inline,0.477,,4096,0,134.0,0,"emitted 6119 != write_idx 13943; requests_seen=580, expected 1350"
+base,4,16484.7,0.303,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,4,16015.37,0.312,0.0,False,6797,6363,434,0,0,576568,0.91,1262,0,1264,47,,7626,7626,0,1263,False,68324,inline,0.506,,4096,0,174.3,0,"emitted 6363 != write_idx 6797; requests_seen=1264, expected 1350"
+all-ii,4,15841.68,0.316,0.0,False,13883,8988,4895,0,0,1574039,1.138,875,0,875,291,,9882,9882,0,894,False,76312,inline,0.621,,4096,0,50.2,0,"emitted 8988 != write_idx 13883; requests_seen=875, expected 1350"
+base,5,16572.75,0.302,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,5,15090.31,0.331,0.0,False,6801,6371,430,0,0,798239,0.923,1264,0,1265,47,,7636,7636,0,1265,False,65092,inline,0.519,,4096,0,200.2,0,"emitted 6371 != write_idx 6801; requests_seen=1265, expected 1350"
+all-ii,5,16302.37,0.307,0.0,False,13973,8814,5159,0,0,1238946,1.13,847,0,847,291,,9680,9680,0,866,False,75760,inline,0.619,,4096,0,35.9,0,"emitted 8814 != write_idx 13973; requests_seen=847, expected 1350"
+base,6,16645.11,0.3,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,6,14763.84,0.339,0.0,False,6801,6055,746,0,0,44184,0.864,1201,0,1202,47,,7257,7257,0,1202,False,66632,inline,0.497,,4096,0,62.9,0,"emitted 6055 != write_idx 6801; requests_seen=1202, expected 1350"
+all-ii,6,16148.27,0.31,0.0,False,13946,7641,6305,0,0,366421,0.992,739,0,740,291,,8397,8397,0,756,False,69280,inline,0.566,,4096,0,60.1,0,"emitted 7641 != write_idx 13946; requests_seen=740, expected 1350"
+base,7,16217.77,0.308,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,7,16407.31,0.305,0.0,False,6801,5182,1619,0,0,60663,0.75,1027,0,1026,47,,6210,6210,0,1028,False,64536,inline,0.427,,4096,0,69.3,0,"emitted 5182 != write_idx 6801; requests_seen=1026, expected 1350"
+all-ii,7,16175.79,0.309,0.0,False,13925,8989,4936,0,0,34502,1.148,874,0,875,291,,9882,9882,0,893,False,71360,inline,0.628,,4096,0,50.9,0,"emitted 8989 != write_idx 13925; requests_seen=875, expected 1350"
+base,8,16820.2,0.297,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,8,16087.91,0.311,0.0,False,6801,6701,100,0,0,403875,0.949,1331,0,1330,47,,8033,8033,0,1332,False,69900,inline,0.528,,4096,0,175.2,0,"emitted 6701 != write_idx 6801; requests_seen=1330, expected 1350"
+all-ii,8,14990.43,0.334,0.0,False,14487,8914,5573,0,0,172240,1.158,848,0,847,291,,9782,9782,0,868,False,76232,inline,0.625,,4096,0,57.0,0,"emitted 8914 != write_idx 14487; requests_seen=847, expected 1350"
+base,9,16424.93,0.304,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,9,14971.96,0.334,0.0,False,6797,5603,1194,0,0,38836,0.803,1111,0,1111,47,,6715,6715,0,1112,False,67204,inline,0.455,,4096,0,108.9,0,"emitted 5603 != write_idx 6797; requests_seen=1111, expected 1350"
+all-ii,9,16269.52,0.307,0.0,False,13982,9009,4973,0,0,1591822,1.134,868,0,869,291,,9896,9896,0,887,False,76512,inline,0.622,,4096,0,47.0,0,"emitted 9009 != write_idx 13982; requests_seen=869, expected 1350"
+base,10,15206.1,0.329,0.0,True,,,,,,,,,,,,,,,,,,,,,,,,,,
+netfd-ii,10,16342.13,0.306,0.0,False,6801,6707,94,0,0,1260403,0.953,1331,0,1332,47,,8039,8039,0,1332,False,70708,inline,0.529,,4096,0,179.5,0,"emitted 6707 != write_idx 6801; requests_seen=1332, expected 1350"
+all-ii,10,16522.62,0.303,0.0,False,13949,9007,4942,0,0,672836,1.131,871,0,872,291,,9897,9897,0,890,False,76616,inline,0.625,,4096,0,45.4,0,"emitted 9007 != write_idx 13949; requests_seen=872, expected 1350"

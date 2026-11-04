@@ -1,0 +1,3 @@
+collector,rc,seconds,requests,failed,emitted,write_idx,offset_resets,offset_samples,offset_uncertainty_ns,offset_drift_ns,collector_cpu_s,collector_maxrss_kb
+window60,0,3602,1194,0,8405,8405,24,8405,545186,92127918,14.384,18328
+window0,0,3602,1194,0,8405,8405,37,8405,497463,91733326,14.792,17984

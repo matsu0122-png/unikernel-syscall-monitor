@@ -57,7 +57,7 @@ condition (a) "no instrumentation" for 10-5.
 
 ```
 guest/lib-vmitrace/
-  Config.uk               LIBVMITRACE, _RING_ORDER, _GROUP_{ALL,NET,FILE,TIME}
+  Config.uk               LIBVMITRACE, _RING_ORDER, _GROUP_{ALL,NET,NETFD,FILE,TIME}; NETFD default since 10-7
   Makefile.uk
   Library.uk              same fields as lib-libelf's
   include/vmitrace/abi.h  shared-memory layout (the host contract)
