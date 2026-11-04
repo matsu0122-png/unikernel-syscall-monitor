@@ -168,7 +168,7 @@ class LineOffsetEstimatorTest(unittest.TestCase):
         self.assertGreater(e.resets, 0)
 
     def test_pause_within_margin_does_not_reset(self):
-        e = LineOffsetEstimator(lower_margin_ns=500_000)
+        e = LineOffsetEstimator(lower_margin_ns=500_000)  # any margin above the pause
         self.run_line(e, pause=(1800, 300_000))
         self.assertEqual(e.resets, 0)
 
@@ -203,13 +203,13 @@ class LineOffsetEstimatorTest(unittest.TestCase):
             self.assertLess(abs(e.offset - truth), 10 * MS)
         self.assertEqual(e.slope, 0.0)
 
-    def test_margin_does_not_move_the_estimate(self):
-        a, b = LineOffsetEstimator(lower_margin_ns=0), LineOffsetEstimator(lower_margin_ns=500_000)
+    def test_margin_moves_the_estimate_by_half(self):
+        a, b = LineOffsetEstimator(lower_margin_ns=0), LineOffsetEstimator(lower_margin_ns=100_000)
         for e in (a, b):
             for t in range(0, 300, 3):
                 host = 10**15 + t * S
                 e.update([t * S], host - 5 * MS, host + 5 * MS)
-        self.assertLess(abs(a.offset - b.offset), 2)
+        self.assertLess(abs(a.offset - b.offset - 50_000), 2)
 
     def test_same_interface_before_any_data(self):
         e = LineOffsetEstimator()

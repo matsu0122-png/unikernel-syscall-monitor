@@ -502,6 +502,7 @@ def cmd_loss(args):
     raw.mkdir(parents=True, exist_ok=True)
     (raw / "host_before.json").write_text(json.dumps(host_state(), indent=2))
     rows = []
+    # "all" was built when 12 was the default; a rebuild would give order 14
     for order, build in ((10, "all-r10"), (12, "all"), (14, "all-r14")):
         manifest = BUILD_ROOT / build / ".unikraft/build/manifest.json"
         for poll in args.poll_ms:

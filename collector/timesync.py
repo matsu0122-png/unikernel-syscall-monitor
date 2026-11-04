@@ -38,7 +38,7 @@ DEFAULT_WINDOW_NS = 60_000_000_000
 BUCKET_NS = 1_000_000_000
 HISTORY_EVERY_NS = 60_000_000_000
 HISTORY_MAX = 1440
-DEFAULT_LOWER_MARGIN_NS = 500_000
+DEFAULT_LOWER_MARGIN_NS = 100_000
 
 
 class OffsetEstimator:
@@ -134,9 +134,7 @@ class LineOffsetEstimator:
     Each bucket keeps its tightest upper and lower bound. Among all lines passing
     between them, the one with the most room is used, and half that room is the
     uncertainty. With under `recent_ns` of data the rate cannot be told from noise,
-    so the slope stays as it is unless no line fits. The margin only keeps a late
-    record from breaking the fit: it does not move the estimate, which uses the
-    bounds without it where they allow. Slow curvature only retires old buckets (`trims`). `resets` counts
+    so the slope stays as it is unless no line fits. Slow curvature only retires old buckets (`trims`). `resets` counts
     what no line through the last `recent_ns` can explain: a step in the offset, or
     a pause larger than the margin. Same interface as OffsetEstimator."""
 
@@ -250,8 +248,8 @@ class LineOffsetEstimator:
     def offset(self):
         if self.t0 is None:
             return None
-        lo = min(self.a_lo + self.lower_margin_ns, self.a_hi)
-        return self.y0 + int((lo + self.a_hi) / 2 + self.slope * (self.t_last - self.t0))
+        return self.y0 + int((self.a_lo + self.a_hi) / 2
+                             + self.slope * (self.t_last - self.t0))
 
     @property
     def uncertainty(self):

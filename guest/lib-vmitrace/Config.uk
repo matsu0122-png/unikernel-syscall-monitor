@@ -14,9 +14,10 @@ if LIBVMITRACE
 config LIBVMITRACE_RING_ORDER
 	int "Ring capacity per lcpu (log2 of record count)"
 	range 4 20
-	default 12
+	default 14
 	help
-		Each record is 96 bytes. 12 = 4096 records = 384 KiB per lcpu.
+		Each record is 96 bytes. 14 = 16384 records = 1536 KiB per lcpu.
+		ALL filled up to 98% of a 4096-record ring under ab (Phase 10-7).
 
 comment "Syscall groups to record"
 

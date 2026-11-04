@@ -24,7 +24,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-4 (Jaeger): done.** See below. `deploy/docker-compose.yml` (Jaeger all-in-one 1.57, `127.0.0.1:14317` OTLP gRPC / `127.0.0.1:26686` UI). The collector's OTLP gRPC export reached it: 3 curls show up in the UI as 3 `connection` traces (accept4 ... close), plus event-loop traces with ERROR spans for -errno. Screenshots: `docs/img/phase10_4_*.png`. Also done before 10-4: build nonce in the header (ABI v2) + bitmap check in the collector, cleanup moved to a detached same-user process, NETFD group and connection-closing fixes for NET, unit tests for traces/time sync.
 - **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size. A supplementary run with the `performance` governor and unrelated containers stopped (section 7) gives the final cost figures: ALL with nobody reading +0.13 +/- 0.26 us per syscall, legacy Phase 8 103.8 us. The earlier "(ii) faster than base" result did not appear there, and Jaeger received every span the collector generated.
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
-- **Phase 10-7 (collector speed-up, time offset): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the margin is thin; raising the ring to 16,384 is measured and awaits a decision. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset now fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). The default group is NETFD.
+- **Phase 10-7 (collector speed-up, time offset, tool use): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the default ring is now 16,384 and the default group NETFD. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). **vmitrace also explained the load limit open since Phase 3:** lwIP keeps one 4 KiB `tcp_pcb` per closed connection in TIME_WAIT for 120 s. A reused client port then stalls (about 3,100 connections), and the memory runs out (about 4,200-5,300 connections, 64 MiB). It is not a leak.
 
 ## Phase 1 result
 
@@ -117,6 +117,11 @@ question motivating the project: workable for research capture/analysis,
 not workable as an always-on production instrumentation approach without
 a fundamentally lower-overhead mechanism (filtering to fewer syscalls of
 interest via `VMI_INCLUDE_NRS`, or a future non-breakpoint approach).
+
+> **Correction (Phase 10-7)**: this is not a leak, and `orig_rax: 2` is not `open`.
+> See "Tool use: why load stops" in the Phase 10-7 result. The crash is a page fault in
+> the page allocator when TIME_WAIT `tcp_pcb`s use up guest memory. The ~1,500-1,700
+> figure did not reproduce (the Phase 1-9 image now fails at 5,347).
 
 **Unrelated but important discovery made while tuning benchmark scale:**
 this Unikraft nginx build (64M memory, single worker) crashes outright
@@ -1924,7 +1929,7 @@ mode `offset_ns` in the stats is against the raw clock. Worst update on syntheti
 1.7 ms, about every 10 s.
 
 **Comparison.** Four collectors on one guest, 3,601 s, 1,194 requests, 0 failed,
-`--otel none`, final code (boot B). Error is from the exact line of that run plus the
+`--otel none`, boot B (the code before the margin decision below). Error is from the exact line of that run plus the
 wall clock, replayed on the same polls. It favours the line method because the
 reference is a line, so the last column is the independent check: the estimated time
 of each `accept4` against the host's own time just before and after that `curl` (a
@@ -1941,7 +1946,7 @@ window of about 4.3 ms). Being outside it is an error of at least that amount.
 |---|---|---|---|---|
 | first run (no 20 s or line collector) | 24 | - | 37 | - |
 | boot A (line before the last fixes) | 6 | 1 | 21 | 0 |
-| boot B (final code) | 2 | 0 | 16 | 0 |
+| boot B | 2 | 0 | 16 | 0 |
 
 - Reset counts of the window methods vary a lot between runs, with what NTP does in
   that hour. **A 20 s window has few resets but is not more accurate**: it keeps less
@@ -1952,6 +1957,30 @@ window of about 4.3 ms). Being outside it is an error of at least that amount.
   the late side. This was not investigated further.
 - The run depends on the rate staying constant; only one hour per boot was measured.
 
+**Which margin (decided afterwards).** After the line method was chosen, the 65 late
+requests were checked by replaying both one-hour runs, moving each record's time by
+the difference in offset. The 65 came from code in which the 500 us margin already
+affected only the reset test, so that margin was not what pushed them late:
+
+| variant | boot B: outside all / after 5 min / after 20 min | boot B: error after 20 min, mean / max, us | boot A: outside all / after 5 min / after 20 min | boot A: error after 20 min, mean / max, us |
+|---|---|---|---|---|
+| margin 500 us, reset test only (code of that run) | 141 / 65 / 0 | +38 / 82 | 125 / 69 / 0 | +61 / 325 |
+| margin 500 us, moves the estimate | 85 / 36 / 0 | -212 / 250 | 102 / 69 / 0 | -189 / 250 |
+| margin 100 us, reset test only | 141 / 65 / 0 | +38 / 82 | 125 / 69 / 0 | +61 / 325 |
+| **margin 100 us, moves the estimate (adopted)** | 133 / 65 / 0 | **-12 / 50** | 120 / 69 / 0 | **+11 / 275** |
+| no margin | 141 / 65 / 0 | +38 / 82 | 123 / 67 / 0 | +61 / 325 |
+| hindsight line (floor, not usable live) | 0 / 0 / 0 | 0 / 0 | 20 / 0 / 0 | 0 / 0 |
+
+- **Adopted: 100 us, in the estimate.** It is slightly better on every count, but the
+  65 remain, so this is not their fix.
+- **The late requests are a settling effect of the slope:** none remain after 20
+  minutes under any variant, and the hindsight line has none after 5 minutes. Fixing it
+  would mean better slope estimates early on; this was not attempted. The 500 us
+  variant looks better on the count only because it shifts every time about 200 us
+  early, as its error column shows.
+- These are replays. The one-hour live runs used the 500 us code; 100 us was not run
+  live for an hour. The rate of resets with 100 us is taken from the table below.
+
 **Lower margin and the unexplained reset.** The reset in a short trial occurred again
 (1 of 40 trials, netfd-ii, window mode, no margin). Replaying the logged polls:
 
@@ -1961,14 +1990,14 @@ window of about 4.3 ms). Being outside it is an error of at least that amount.
 | resets, line | 0 | 0 | 0 | 0 | 0 | 0 |
 
 A lower bound sat 2.4 us above the upper bound at that moment, and 36 us above the
-lowest upper bound in the trial. So **100 us was enough here**, and the default is
-500 us as an allowance for larger pauses. A timestamp older than `t_lo` by a few us
+lowest upper bound in the trial. So **100 us was enough here**, and that is the
+default. A longer pause would cost one reset, which recovers by itself. A timestamp older than `t_lo` by a few us
 fits a vCPU pause or just the hook's own run time; **which one was not determined**.
-The margin does not move the estimate. In live line mode, none of the 40 (ii) trials
+In live line mode, none of the 40 (ii) trials
 of the ring comparison had a reset. This also fits the 4 resets in the 10-6 run, which
 was not measured.
 
-### Ring size: 16,384 records (order 14), not changed yet
+### Ring size: 16,384 records (order 14), now the default
 
 10 rounds, alternated, line mode, same session:
 
@@ -1995,8 +2024,88 @@ was not measured.
 - It also holds more unread guest data in RAM, but all of guest RAM is exposed to
   readers of the shared file anyway (see the security model).
 
-**Recommendation: raise the default to 14.** Whoever approves it should weigh 1.125 MiB
-per lcpu against a ring that is otherwise up to 98% full. Not changed yet.
+**Done: `LIBVMITRACE_RING_ORDER` defaults to 14** (`Config.uk`), checked with a build that
+sets nothing: capacity 16,384, 22 NETFD syscalls, and a 1,000-request run with no loss.
+Existing build directories keep what they were built with until rebuilt: under
+`/home/matsu/vmitrace-build`, `netfd` and `all` are still order 12, and all figures above
+labelled 4,096 were measured with those.
+
+### Tool use: why load stops (open since Phase 3)
+
+Phase 3 reported that this guest crashes after ~1,500-1,700 requests, suspected a leak of
+`open` without `close`, and suggested looking with this tool. In Phase 10, `ab -n 5000
+-c 5` stalled at 3,000-3,500 instead. vmitrace, with QEMU's packet dump and the host's
+socket table beside it, explains both as one cause. About 25 minutes of the 1 hour
+budget were used. Tools: `tools/ab_stall.py`, `tools/paced_client.py`, `tools/leak_pages.py`.
+
+**Cause.** nginx closes first, so each connection ends in TIME_WAIT inside the guest's
+lwIP, which lasts 2 x `TCP_MSL` = 120 s. This build uses `CONFIG_LWIP_HEAP`, so
+PCBs come from `malloc` and `LWIP_NUM_TCPCON=64` does not bound them. `malloc` here takes
+at least a page, so each one holds about 4 KiB for 120 s. This leads to two separate limits:
+
+1. **A stall at about 3,100 connections, when the host reuses a client port.** The host
+   walks the even ports in random steps of 2-16, so it comes back after about 3,100
+   connections (first reuse in the capture: position 3,117, port 56648, first used at
+   position 3). The SYN reaches a PCB still in TIME_WAIT. `tcp_timewait_input` answers an
+   out-of-window SYN with an ACK (`ack 84`), slirp answers that with RST and resends the
+   SYN about 6 s later, and `ab -s 5` gives up first.
+2. **A crash at about 4,200-5,300 connections (64 MiB), when PCBs use up guest memory.**
+   It is a page fault in `bbuddy_palloc` (`0x1477b0`, `mov %ecx,0x10(%rax)`, a write).
+
+**What vmitrace showed.** All of this is from outside the guest, with nothing added to it.
+
+| question | result |
+|---|---|
+| `open` without `close`? | **No.** One `openat` after startup. Before the stall: `accept4` 3,129, `close` 3,129 |
+| fds growing? | **No.** At most 3-4 open, the same highest fd throughout |
+| Syscalls returning errors? | **None** |
+| What happens at the stall? | Nothing: about 5.2 s without a syscall. The new connections never reach `accept4` |
+| What was running at the crash? | Last syscall `close`, returned 0. No `open` in progress |
+| Per connection or per request? | Per connection: keep-alive took 100,000 requests (8 `accept4`) with no crash |
+| Memory growth, from the host? | 1.055 non-zero guest pages per connection, 4.3 KiB. Only pages that are no longer zero could be counted |
+| What is in those pages? | Size 248 (`sizeof(struct tcp_pcb)`), then 10.0.2.15, 10.0.2.2, port 80, state 10 |
+| How many? | 1,000 connections: 1,000 PCBs in TIME_WAIT. 3,000 connections: 3,000. Each with its own client port |
+
+Reading the PCB state from the shared RAM file is possible because the host can read all
+of guest RAM, the exposure noted in the security model.
+
+**Checking the explanation by prediction:**
+
+| prediction | test | result |
+|---|---|---|
+| Not specific to `ab` | Python client, default ports | stops after 3,209 |
+| Not caused by vmitrace | base build, no lib-vmitrace | stall at 3,000-3,500 (`ab`), crash at 4,581 connections |
+| New ports avoid the stall | Python client, a new source port each time | passes the stall, crashes at 4,195-4,962 |
+| The count depends on memory | same client, 64 / 128 / 256 MiB | 4,195 (3 of 3) / 19,780 / over 36,669 (stopped at 60 s, no crash). The extra 64 MiB gives 15,585 connections, 1.05 pages each |
+| Not a leak: expiry frees it | 3,000 + **125 s** + 3,000 connections (more than 4,195) | no crash |
+| Not a leak: a low rate never fills it | 30 connections/s for 180 s, 5,400 connections | no crash |
+| Reuse needs TIME_WAIT alive | `ab` 3,000, pause, `ab` 1,000 | pause 10 s: stalls. Pause 125 s: passes |
+| Batching does not help | 100-request steps | stops at 3,000-3,100 (the earlier 3,000 was the test's own limit) |
+| Same for the Phase 3 era image | image of 2026-07-04, new ports | crash at 5,347 (2 of 2), same `0x1477b0`, same `orig_rax: 2` |
+
+**Slirp and `ab`:** QEMU had at most 29 fds, so it is not an fd leak in slirp. Slirp's
+sockets hold the unsent request (83 bytes in the receive queue), which is the stall seen
+from the host, not its cause. `ab` is not at fault either: it only reports the timeout.
+
+**Correction to Phase 3:** `orig_rax: 2` was read as the `open` syscall. Here the crash
+is in a page fault on a write, and the last syscall was `close`, so the 2 fits the x86 page
+fault error code (write to a non-present page). That reading of the field comes from the
+instruction and the x86 definition; the Unikraft trap code was not traced.
+
+**Not explained:**
+
+- Why Phase 3 saw ~1,500-1,700. The image of that era now fails at 5,347, and the
+  Phase 3 conditions (`ab -c 10`, and whatever the host and image were then) were not
+  recreated, so that it was the same cause is likely but not shown.
+- Why the allocator faults instead of returning NULL, which would have let lwIP call
+  `tcp_kill_timewait`.
+- Why the crash count differs by build and memory option (4,195 / 4,581 / 4,962).
+- Whether the pages counted include buffers that were freed but not zeroed: 2,101 pages
+  became non-zero for 2,000 connections, 2,000 of them being PCBs by count.
+
+**Possible remedies, none tried:** a lower `TCP_MSL` in lwIP, `CONFIG_LWIP_POOLS` so that
+`LWIP_NUM_TCPCON` bounds PCBs and old TIME_WAIT ones are reclaimed, keep-alive in the
+workload, or letting the client close first.
 
 ### Limits
 
@@ -2009,16 +2118,13 @@ per lcpu against a ring that is otherwise up to 98% full. Not changed yet.
 - **The reader has limits too (simulated guest, no OTel):** 150,000 records/s for
   100,000 records lost 3.89% to overwrite. In 14,000-record bursts with OTLP, there
   was no loss up to 300,000 records/s, and 12.66% in 1 of 3 runs at 400,000.
-- **Why sustained limits come only from the simulated guest:** nginx stops the load
-  early. The earlier phases recorded this as falling over at about 1,500 requests per
-  instance. **That figure did not reproduce in the Phase 10 builds:** one `ab -n 5000
-  -c 5` stalled between 3,000 and 3,500 requests in 8 of 8 tries, on plain, base, ALL
-  and ALL with the larger ring alike (so it is not caused by vmitrace), and in 7 of 8
-  nginx still answered a `curl` afterwards. In 100-request steps, 3,000 requests
-  passed. The cause is not known. Even 3,000 requests last only about 0.2 s at these
-  rates, so the real guest has not given a sustained load. The simulated guest follows
-  the same record protocol but is not a real workload, so these numbers locate the
-  limit and are not results for nginx.
+- **Why sustained limits come only from the simulated guest:** without keep-alive this
+  guest stops taking load after a few thousand connections at these rates (see "Tool use"
+  below), and those last well under a second. So the real guest has not given a
+  sustained load of new connections. The simulated guest follows the same record
+  protocol but is not a real workload, so these numbers locate the limit and are not
+  results for nginx. Keep-alive would allow a longer real test (not done; it sends far
+  fewer `accept4` and `close`).
 - The output queue trades memory for burst tolerance. Peak RSS in these runs was
   61.8 MiB, with up to 13,745 records queued. A full 256 Ki queue was not measured.
 - The threads share the GIL, so reader latency still depends on the output work.

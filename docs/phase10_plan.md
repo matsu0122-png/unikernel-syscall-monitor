@@ -71,9 +71,11 @@ while reviewing earlier steps. Results go into README as "Phase 10-x result".
 
 - Zero loss for NETFD and ALL at 1,350 requests: met. No compiled reader needed.
 - Default group NETFD: done.
-- Time offset: line against `CLOCK_MONOTONIC_RAW`, 0 resets in two one-hour runs.
+- Time offset: line against `CLOCK_MONOTONIC_RAW`, margin 100 us. Decided.
+- Default ring: order 14 (16,384 records). Done; `netfd` and `all` build directories
+  are still order 12 until rebuilt.
+- Why load stops: explained (README "Tool use: why load stops"): TIME_WAIT PCBs.
 - Open:
-  - Ring default 14 (16,384 records): measured, recommended, awaiting a decision.
-  - Why `ab -n 5000` stalls between 3,000 and 3,500 requests (not caused by vmitrace).
-  - Accuracy in the first 5 minutes after boot; 65 late requests in the curl check.
+  - Slope settling: late timestamps in the first 20 minutes after boot.
+  - Remedies for the TIME_WAIT limits (not tried); why the allocator faults.
   - Reducing what is sent to Jaeger (README "Limits"), not decided.
