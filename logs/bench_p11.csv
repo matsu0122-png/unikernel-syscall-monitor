@@ -1,0 +1,19 @@
+condition,rep,rps,failed,mean_ms,stats
+base,0,13691.13,0,0.365,
+base,1,15935.41,0,0.314,
+base,2,15312.37,0,0.327,
+rare,0,16297.26,0,0.307,
+rare,1,16800.13,0,0.298,
+rare,2,14584.35,0,0.343,"{""entries"": 0, ""exits"": 0, ""unmatched_exits"": 0, ""exit_step_overs"": 0, ""nr_mismatch"": 0, ""foreign_traps"": 0, ""alerts"": {}, ""mean_stop_handling_us"": 0.0, ""integrity_checks"": 2, ""mean_check_ms"": 22.4}"
+net,0,758.98,0,6.588,
+net,1,787.58,0,6.349,
+net,2,787.77,0,6.347,"{""entries"": 1800, ""exits"": 1800, ""unmatched_exits"": 0, ""exit_step_overs"": 0, ""nr_mismatch"": 0, ""foreign_traps"": 0, ""alerts"": {}, ""mean_stop_handling_us"": 162.4, ""integrity_checks"": 3, ""mean_check_ms"": 9.78}"
+netfd_noret,0,619.08,0,8.077,
+netfd_noret,1,631.92,0,7.912,
+netfd_noret,2,622.22,0,8.036,"{""entries"": 4500, ""exits"": 0, ""unmatched_exits"": 0, ""exit_step_overs"": 0, ""nr_mismatch"": 0, ""foreign_traps"": 0, ""alerts"": {}, ""mean_stop_handling_us"": 158.1, ""integrity_checks"": 4, ""mean_check_ms"": 14.22}"
+netfd,0,316.63,0,15.791,
+netfd,1,322.35,0,15.511,
+netfd,2,322.68,0,15.495,"{""entries"": 4500, ""exits"": 4500, ""unmatched_exits"": 0, ""exit_step_overs"": 0, ""nr_mismatch"": 0, ""foreign_traps"": 0, ""alerts"": {}, ""mean_stop_handling_us"": 161.7, ""integrity_checks"": 5, ""mean_check_ms"": 8.22}"
+all,0,160.83,0,31.088,
+all,1,160.8,0,31.095,
+all,2,161.8,0,30.902,"{""entries"": 8997, ""exits"": 8996, ""unmatched_exits"": 0, ""exit_step_overs"": 0, ""nr_mismatch"": 0, ""foreign_traps"": 0, ""alerts"": {}, ""mean_stop_handling_us"": 163.4, ""integrity_checks"": 8, ""mean_check_ms"": 7.44}"

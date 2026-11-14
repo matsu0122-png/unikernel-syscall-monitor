@@ -6,3 +6,7 @@ logs/bench_breakdown_raw/
 collector/.venv/
 logs/bench_p10_raw/
 logs/p10_6_live/
+logs/bench_p11_raw/
+agentless/traps.json
+agentless/experiments/*.o
+agentless/experiments/*.bin

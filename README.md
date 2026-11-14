@@ -25,6 +25,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-5 (verification): done.** See below. Correctness: 10/10 fresh boots match the in-guest strace from index 0 (307/307 names, 262/262 comparable return values). NET/NETFD record nothing outside their groups. In-guest cost of lib-vmitrace is below what this host can resolve with the Phase 8 method; a longer-window supplementary run puts it at +0.13 +/- 0.28 us per syscall (ALL, nobody reading), against 101.4 us for the legacy Phase 8 monitor measured in the same session. Main limit found: the Python collector cannot keep up with ~90k-170k syscalls/s, so loss depends on ring capacity vs. burst size. A supplementary run with the `performance` governor and unrelated containers stopped (section 7) gives the final cost figures: ALL with nobody reading +0.13 +/- 0.26 us per syscall, legacy Phase 8 103.8 us. The earlier "(ii) faster than base" result did not appear there, and Jaeger received every span the collector generated.
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
 - **Phase 10-7 (collector speed-up, time offset, tool use): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the default ring is now 16,384 and the default group NETFD. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). **vmitrace also explained the load limit open since Phase 3:** lwIP keeps one 4 KiB `tcp_pcb` per closed connection in TIME_WAIT for 120 s. A reused client port then stalls (about 3,100 connections), and the memory runs out (about 4,200-5,300 connections, 64 MiB). It is not a leak.
+- **Phase 11 (agentless selective trapping): prototype.** See below. No guest code, distro QEMU: software breakpoints from `agentless/gen_traps.py` on the selected syscalls' tail jumps in the dispatcher, handled by `agentless/vmi_trap.py` over the gdbstub (own RSP client, resumes at the jump target without single-stepping), JSONL + OTel/Jaeger. Throughput: NET 5.2%, NETFD 2.1%, ALL 1.1% of base; an unused selection costs nothing measurable; about 300 us per stop. Checked first: the guest cannot remove hardware breakpoints by writing DR0-7, but sees and can remove 0xCC; a guest removal of a trap was detected in 0.27 s and re-armed.
 
 ## Phase 1 result
 
@@ -2141,6 +2142,148 @@ These affect only what goes to Jaeger. JSONL output is limited far less (about
 190,000 records/s of output-thread CPU in the simulated guest, without OTel).
 Each option loses detail in Jaeger, so the choice depends on what the traces are
 used for.
+
+## Phase 11 result (prototype): agentless selective trapping
+
+Goal: monitor without any code in the guest and without changing QEMU. A
+program receives the events from QEMU and sends them on to OTel/Jaeger.
+Phase 10's `lib-vmitrace` is a guest agent. A compromised guest can rewrite it,
+because everything runs in ring 0. Here the guest image is the unmodified one,
+`../.unikraft/build/`, and QEMU is the distro 6.2.0. Host: Intel VMX, kernel 5.15.
+
+### Can the guest remove a breakpoint? (checked before building)
+
+Scripts: `agentless/experiments/`. The guest ring-0 code was injected through the
+gdbstub into `ramfs_rename`, which is not called while serving GET. This stands in
+for an attacker with code execution.
+
+| | hardware (`hbreak`, DR0-3) | software (`break`, 0xCC) |
+|---|---|---|
+| guest reads it | DR7 = `0x400`, DR0 = 0 (reset values; the host's are not visible) | reads `0xcc` at the site |
+| guest removes it | wrote 0 to DR0-3/6/7: **both host hbreaks kept firing** (3 more accept4 hits) | cleared CR0.WP and wrote `0xe9` back: **the trap stopped firing** |
+| limit | 4 addresses | none |
+
+- With the host debugging, KVM keeps the guest's debug-register writes in the
+  guest's copy (it read back 0x401 after writing it), not in the CPU. This explains
+  the result. The KVM source was not read.
+- **Host single-step is lost at a MOV to/from DR.** `stepi` from a `mov %dr7,%rax`
+  ran the guest freely to the next breakpoint. In the first attempt this crashed the
+  guest, which ran into leftover code. The cause was not checked; probably the
+  emulated-instruction skip loses the host's TF. Consequence: never single-step an
+  instruction the guest chose.
+- "Notes for later phases" said `hbreak` is unreliable on KVM. It worked in every run
+  here.
+
+Chosen: software breakpoints (no limit on the number), with removal detected by
+the host.
+
+### Design
+
+- `agentless/gen_traps.py <image>.dbg` writes `agentless/traps.json` from the image.
+  It does not change the image.
+  - Binary syscalls go through one dispatcher. `uk_syscall6_do_e` indexes a jump
+    table with the saved `orig_rax`. Each case block loads the arguments, then
+    `jmp uk_syscall_do_<name>`.
+  - In this image, all 185 provided syscalls have such a tail jump. 257 numbers go to
+    the `-ENOSYS` default.
+  - The only caller is `ukplat_syscall_handler` (`mov %r12,%rdi; call`). So at a site,
+    r12 points at the saved Linux-ABI registers. Every handler returns to 0x141ae8.
+  - The script refuses to write a table when the code does not have this shape: an
+    unexpected prologue, an r12 write in the dispatcher, a case block with other
+    instructions, a name mismatch, or an opcode other than `e9`.
+  - Groups come from `guest/lib-vmitrace/groups.h`: NET 16, NETFD 22, FILE 42,
+    TIME 11, ALL 185 sites.
+- `agentless/vmi_trap.py --instance <name> --group NETFD` does the following:
+  1. It starts the gdbstub (HMP `gdbserver`, loopback only) and speaks RSP itself
+     (`agentless/rsp.py`, no gdb).
+  2. Before arming, it compares the live dispatcher, jump table and caller with the
+     image over HMP `xp`. It refuses on any difference.
+  3. It places 0xCC (`Z0`) on the selected sites only. Unselected syscalls cause no
+     VM exit.
+  4. On a hit it reads r12 and the saved regs (`nr` from `orig_rax`, checked against
+     the site; args `rdi rsi rdx r10 r8 r9`). It then **resumes at the jump target
+     (`P rip`)**. There is no single-step, and the 0xCC is never lifted.
+  5. For return values, it arms 0x141ae8 only while a selected syscall is in flight.
+     It matches the return by `rsp == rsp_at_entry + 8`.
+  6. An integrity thread re-reads the three regions every second over HMP while the
+     guest runs. Each check takes 7-22 ms. Any byte that differs from the image (with
+     the armed 0xCCs overlaid) is an alert. A removed trap is re-armed: the thread
+     interrupts the guest, then sends `z0` and `Z0`.
+  7. Output is JSONL in the collector format (`src: "trap"`, host timestamps, so no
+     time offset is needed). OTel goes through `collector/traces.py`, service
+     `vmitrace-agentless`.
+
+RSP details found while building, all handled in `rsp.py`:
+- Connecting stops a running guest and sends `T02` unasked. Reading it first keeps
+  the replies in step. "Notes for later phases" says attaching does not pause; that
+  is true of HMP `gdbserver` only.
+- QEMU 6.2 answers `QStartNoAckMode` with "" (unsupported).
+- QEMU refuses `P` with "" until the client has read `target.xml`.
+- The stub keeps listening after a detach, so a second HMP `gdbserver` on the same
+  port fails.
+
+### Results
+
+**Records.** These were checked on a single curl with ALL:
+- accept4=7, epoll_ctl, epoll_wait, gettimeofday, clock_gettime, recvfrom=78,
+  pread64=612, writev=850, setsockopt=0, recvfrom=0, close=0. Names and return
+  values match Phase 8.
+- One difference: an extra `epoll_wait/gettimeofday/clock_gettime` before
+  `recvfrom=0`. The peer's FIN had not arrived yet, which depends on timing.
+- In all runs: `nr_mismatch` 0, unmatched exits 0, foreign traps 0.
+- Jaeger received a `connection` trace (accept4 ... close) and an `event-loop` trace.
+
+**Throughput** (`agentless/bench_agentless.py`, `logs/bench_p11.csv`):
+- `ab -n 300 -c 5`, 3 runs per condition, a fresh instance per condition.
+- Governor `powersave`, other containers running. These are not Phase 10-5
+  supplementary conditions.
+
+| condition | req/s | % of base | traps (stops)/request |
+|---|---:|---:|---:|
+| base (no tool) | 14,980 +- 1,159 | 100 | 0 |
+| `connect,socket` (not used by nginx when serving) | 15,894 +- 1,162 | 106 (noise) | 0 |
+| NET | 778 +- 17 | 5.2 | 2 entries + 2 exits |
+| NETFD, entry only | 624 +- 7 | 4.2 | 5 |
+| NETFD | 321 +- 3 | 2.1 | 5 + 5 |
+| ALL | 161 +- 1 | 1.1 | about 10.7 + 10.7 |
+
+- **Each stop costs about 300 us** (305, 307, 305, 287 us from the four rows). About
+  160 us of that is this tool's handling: one `g`, one `m`, `P`, `c`, and on exits
+  `z0`. The rest is the KVM exit, QEMU's gdbstub and loopback TCP.
+- Selection is what pays. A rarely used set costs nothing measurable; that is the
+  "low-frequency events" use where VMI is practical. Full tracing (ALL, 1.1%)
+  is as slow as Phase 3's gdb/RSP (about 1%). It is 6x slower than the Phase 8
+  patched-QEMU monitor (929 req/s).
+
+**Tampering** (`--test-guest-untrap accept4`, test only):
+- At the first accept4, the guest's own ring-0 code cleared CR0.WP, wrote `0xe9` over
+  the 0xCC, and continued the syscall.
+- After 0.27 s the check reported `trap_removed` (live `0xe9`, expected `0xcc`).
+  `trap_rearmed` followed (live `0xcc`), then `restored`.
+- All 12 curls' accept4 were recorded: re-arming happened before the next connection.
+  This is timing. Up to `--check-interval-s` (1 s) of a removed trap's syscalls can be
+  missed.
+
+### Limits
+
+- **A guest with code execution can see the traps (0xCC) and remove them.**
+  Removal is detected, but only at the next check. Restoring the byte between two
+  checks is missed (as in Phase 10's limits). The jump table and dispatcher are
+  checked too.
+- **Paths that do not go through the dispatcher are not seen.** Examples: a direct
+  call to `uk_syscall_do_*`, Unikraft's native calls, or another `MSR_LSTAR`. Both
+  are the same as in Phase 10.
+- Every hit stops the whole VM (gdbstub all-stop). There is one vCPU here; SMP is not
+  handled.
+- One gdbstub client at a time, so nothing else can debug the guest while this runs.
+- The gdbstub gives full read/write of guest memory and registers to whoever can
+  reach the loopback port.
+- The integrity check reads over HMP, so `mon.sock` access is needed as well.
+- Not tested: a guest-chosen breakpoint (`int3` of its own, counted as
+  `foreign_trap` and stopped after 20), syscalls blocking in another thread
+  (the exit step-over path, `exit_step_overs` stayed 0), and AMD.
+- The DR experiment covers MOV DR only (not `IA32_DEBUGCTL`, not timing-based
+  detection).
 
 ## Notes for later phases
 
