@@ -2335,6 +2335,25 @@ Results (NET, one vCPU, same host as Phase 11):
 | throughput, `ab -n 300 -c 5` x3 | 736, 768, 789 req/s (Phase 11 runtime-armed NET: 778 +- 17); 167.6 us tool handling per stop |
 | runtime-armed mode (`--instance`, unmodified image) | still works (regression check) |
 
+Sending to Jaeger (OTel). `qemu-trap.sh` now starts the tool with
+`--otel otlp --otlp-endpoint 127.0.0.1:14317` by default, the Jaeger of
+`deploy/docker-compose.yml` (UI http://127.0.0.1:26686, service
+`vmitrace-agentless`). `VMI_TRAP_OTEL=file|none` and `VMI_TRAP_OTLP_ENDPOINT`
+change it. The JSONL is written either way.
+- Resource attributes: `vmitrace.instance` (QEMU `-name`, kraftkit's machine
+  id), `vmitrace.image_sha256` (the baked image) and `vmitrace.selection`
+  (`baked:NET`).
+- Checked with the v3 query API (`/api/v3/traces`). 3 curls gave 4 traces with
+  30 spans: 3 `connection` traces (accept4, recvfrom, setsockopt, recvfrom=0;
+  all 3 ended by EOF) and 1 `event-loop` trace, which holds the startup
+  socket/connect/bind/listen. Two connections showed up while the VM was
+  running (5 s batch export); the third ended at the tool's flush.
+- Tampering (`--test-guest-untrap accept4`) shows up as spans
+  `integrity.trap_removed` (addr 0x14100b, live 0xe9, expected 0xcc),
+  `integrity.trap_rearmed` and `integrity.restored`. They were zero-length
+  spans, which Jaeger flags with "Negative duration detected". They now last
+  1 us.
+
 What baking changes:
 - The image carries the policy. The host cannot forget to arm a site, and there
   is no window between boot and attach.

@@ -22,7 +22,11 @@
 #
 # Environment:
 #   VMITRACE_QEMU      default /usr/bin/qemu-system-x86_64
-#   VMI_TRAP_ARGS      extra vmi_trap.py arguments, e.g. "--otel otlp"
+#   VMI_TRAP_OTEL      otlp (default), file or none. otlp sends spans to
+#                      Jaeger (deploy/docker-compose.yml) as service
+#                      vmitrace-agentless; the JSONL is written either way.
+#   VMI_TRAP_OTLP_ENDPOINT  default 127.0.0.1:14317 (OTLP gRPC)
+#   VMI_TRAP_ARGS      extra vmi_trap.py arguments
 #   VMI_TRAP_JSONL     default logs/agentless-<qemu -name>.jsonl
 #   VMI_TRAP_TIMEOUT   seconds to wait for the tool (default 20)
 
@@ -95,6 +99,9 @@ jsonl=${VMI_TRAP_JSONL:-$ROOT/logs/agentless-${name:-vm}.jsonl}
 # shellcheck disable=SC2086  # VMI_TRAP_ARGS is a word list
 setsid "$PY" "$HERE/vmi_trap.py" --mon "$mon" --traps "$manifest" \
 	--ready-file "$ready" $resume --jsonl "$jsonl" \
+	--otel "${VMI_TRAP_OTEL:-otlp}" \
+	--otlp-endpoint "${VMI_TRAP_OTLP_ENDPOINT:-127.0.0.1:14317}" \
+	--otel-file "$rundir/vmi_trap.spans.jsonl" \
 	--stats "$rundir/vmi_trap.stats.json" ${VMI_TRAP_ARGS:-} \
 	</dev/null >>"$toollog" 2>&1 &
 tool=$!

@@ -156,7 +156,7 @@ class Integrity(threading.Thread):
 
 
 # ---------------------------------------------------------------- OTel
-def setup_otel(kind, endpoint, dump_path, instance, image_sha):
+def setup_otel(kind, endpoint, dump_path, instance, image_sha, selection):
     if kind == "none":
         return None, None
     from opentelemetry.sdk.resources import Resource
@@ -164,7 +164,8 @@ def setup_otel(kind, endpoint, dump_path, instance, image_sha):
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     res = Resource.create({"service.name": "vmitrace-agentless",
                            "vmitrace.instance": instance,
-                           "vmitrace.image_sha256": image_sha})
+                           "vmitrace.image_sha256": image_sha,
+                           "vmitrace.selection": selection})
     provider = TracerProvider(resource=res)
     if kind == "otlp":
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import \
@@ -288,7 +289,11 @@ def main():
     out = open(a.jsonl, "a", buffering=1)
     provider, tracer = setup_otel(a.otel, a.otlp_endpoint, a.otel_file, instance,
                                   baked["image_sha256"] if baked
-                                  else traps["image_dbg_sha256"])
+                                  else traps["image_dbg_sha256"],
+                                  f"baked:{baked['selection']}" if baked
+                                  else a.syscalls or (a.group or "NETFD").upper())
+    if tracer is not None:
+        log(f"OTel: {a.otel} " + (a.otlp_endpoint if a.otel == "otlp" else str(a.otel_file)))
     tb = None
     if tracer is not None:
         from traces import TraceBuilder
@@ -311,7 +316,7 @@ def main():
                 sp = tracer.start_span(f"integrity.{kind}", start_time=t,
                                        attributes={f"vmitrace.{k}": str(v)
                                                    for k, v in info.items()})
-                sp.end(end_time=t)
+                sp.end(end_time=t + 1000)    # 0 length: Jaeger adds a warning
 
     rsp = Rsp("127.0.0.1", port)
     repair_q, repair_lock = set(), threading.Lock()
