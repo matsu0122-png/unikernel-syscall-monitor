@@ -40,6 +40,23 @@ Started 2026-11-14. Results go into README "Phase 11 result".
    - About 300 us per stop, of which about 160 us is the tool's handling.
    - A trap removed by the guest was detected in 0.27 s and re-armed.
 
+## Done (2026-11-15): Phase 11-2, traps baked in at build time
+
+User's request: set the traps selectively at build time (e.g. network only).
+Option A was chosen: write 0xCC into the image after linking, with no guest
+code. `agentless/bake_traps.py` + `agentless/qemu-trap.sh`; results in README
+"Phase 11-2 result". It is fail-closed: a baked image does not run without the
+host tool.
+
+Open from 11-2:
+- Should the build step run inside `kraft build` (a Kconfig choice instead of a
+  separate command)? Upstream Unikraft has no post-link hook used here yet.
+- `connect`/`socket` are not "never used": nginx calls them at startup (AF_UNIX
+  connect x4, ENOENT). Normal operation must be split into startup and serving
+  when choosing what to watch.
+- Tool exit = the service stops at the next selected syscall. Decide whether
+  that is wanted, or the tool should hand over before exiting.
+
 ## Next
 
 - **Behavioural check for removed or bypassed traps**, as in Phase 10-6's

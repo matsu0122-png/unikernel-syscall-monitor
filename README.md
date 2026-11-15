@@ -26,6 +26,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-6 (integrity): done, tested as a single user.** See below. `integrity/vmitrace_integrity.py` hashes the 9 manifest regions, checks the header and `write_idx`, and compares host-side connections with recorded `accept4`. On a live guest, zeroing the bitmap and swapping one exittab pointer were both detected and reported restored, in the JSONL and in Jaeger. The swap was also detected without hashing, by the behavioural checks. The live run found a bug in `accept4_mismatch` (the alert never cleared), now fixed and retested. The `vmitrace` group and a separate user need root and were not tested.
 - **Phase 10-7 (collector speed-up, time offset, tool use): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the default ring is now 16,384 and the default group NETFD. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). **vmitrace also explained the load limit open since Phase 3:** lwIP keeps one 4 KiB `tcp_pcb` per closed connection in TIME_WAIT for 120 s. A reused client port then stalls (about 3,100 connections), and the memory runs out (about 4,200-5,300 connections, 64 MiB). It is not a leak.
 - **Phase 11 (agentless selective trapping): prototype.** See below. No guest code, distro QEMU: software breakpoints from `agentless/gen_traps.py` on the selected syscalls' tail jumps in the dispatcher, handled by `agentless/vmi_trap.py` over the gdbstub (own RSP client, resumes at the jump target without single-stepping), JSONL + OTel/Jaeger. Throughput: NET 5.2%, NETFD 2.1%, ALL 1.1% of base; an unused selection costs nothing measurable; about 300 us per stop. Checked first: the guest cannot remove hardware breakpoints by writing DR0-7, but sees and can remove 0xCC; a guest removal of a trap was detected in 0.27 s and re-armed.
+- **Phase 11-2 (traps baked in at build time).** See below. `agentless/bake_traps.py` writes the selected 0xCCs into a copy of the image; `agentless/qemu-trap.sh` (kraft's `--qemu`) has `vmi_trap.py` register them while QEMU is paused at `-S`. Fail-closed without the host; nginx's startup syscalls are now recorded; NET throughput is unchanged (about 764 req/s).
 
 ## Phase 1 result
 
@@ -2284,6 +2285,68 @@ RSP details found while building, all handled in `rsp.py`:
   (the exit step-over path, `exit_step_overs` stayed 0), and AMD.
 - The DR experiment covers MOV DR only (not `IA32_DEBUGCTL`, not timing-based
   detection).
+
+## Phase 11-2 result: traps baked in at build time
+
+The selection is now fixed at build time. `agentless/bake_traps.py` is a
+post-link step: it writes a copy of the built image with 0xCC on the selected
+sites only, the same sites `gen_traps.py` finds. Only the trap byte goes into
+the guest; there is no guest code. The distro QEMU is still unmodified.
+
+```sh
+python3 agentless/bake_traps.py --group NET          # or --syscalls connect,socket
+# -> agentless/build/net/nginx_qemu-x86_64 (+ .traps.json manifest)
+cd /somewhere/without/a/Kraftfile
+kraft run --qemu $REPO/agentless/qemu-trap.sh -p 8080:80 --name NAME \
+    $REPO/agentless/build/net/nginx_qemu-x86_64 /usr/bin/nginx
+```
+
+- `bake_traps.py` refuses when the image's dispatcher, jump table or caller
+  differ from the `.dbg` (other build, or already baked), or when a site is not
+  `e9`. The base image is not changed. For NET, `cmp` shows exactly 16 bytes
+  changed. The manifest is the trap table plus `baked`: selection, nrs, sites,
+  and the sha256 of the base and the baked image.
+- `agentless/qemu-trap.sh` is kraft's `--qemu`. It passes probes and
+  non-baked images straight through. For a baked image (`<kernel>.traps.json`
+  next to it, sha256 checked), it does the following:
+  1. It starts QEMU paused. kraftkit passes `-S` itself.
+  2. It starts `vmi_trap.py --mon <mon.sock> --traps <manifest>` detached.
+  3. It exits only once the tool has registered every baked site (`Z0`). On
+     failure or timeout (20 s) it kills the VM.
+  4. kraftkit then resumes the VM over QMP.
+  The guest image is already in RAM at `-S` (`xp` at the entry point reads the
+  image), so the live check runs before the first instruction.
+- `vmi_trap.py` with a baked manifest takes the selection from it and refuses
+  `--group/--syscalls`. Its checks expect 0xCC on exactly the baked sites.
+  Unknown before this phase: `--resume-by-qemu`. If the tool resumes the VM
+  itself (RSP `c`), kraftkit reports "port ... already in use by <the same
+  instance>" and the `kraft run` exits 1, although the VM runs. Leaving the
+  resume to kraftkit avoids that. QEMU 6.2's stub still reports every hit to
+  the client.
+
+Results (NET, one vCPU, same host as Phase 11):
+
+| check | result |
+|---|---|
+| baked image, no host tool | crash at the first `socket` (`#BP`, rip 0x1417e5, rax 0x29) during startup: **fail-closed** |
+| with `qemu-trap.sh` | serves; the records start with nginx's own startup `socket`/`connect` (AF_UNIX, ENOENT) x4, then `socket`, `setsockopt`, `bind`, `listen`. Attaching after start (Phase 11) missed these |
+| records | 26 entries / 26 exits for 3 curls; `nr_mismatch`, unmatched exits, foreign traps 0 |
+| guest removes the accept4 0xCC (`--test-guest-untrap accept4`) | `trap_removed` (live e9), `trap_rearmed` (cc), `restored`; 9 accept4 records for 12 curls, 4 per second: the ones inside the removed window are missed |
+| throughput, `ab -n 300 -c 5` x3 | 736, 768, 789 req/s (Phase 11 runtime-armed NET: 778 +- 17); 167.6 us tool handling per stop |
+| runtime-armed mode (`--instance`, unmodified image) | still works (regression check) |
+
+What baking changes:
+- The image carries the policy. The host cannot forget to arm a site, and there
+  is no window between boot and attach.
+- A guest without its monitor cannot run a selected syscall. Stopping the tool
+  (or a crash of it) leaves the 0xCCs, so the next selected syscall crashes
+  the guest. This is intended, but it means the tool's life is the
+  service's life.
+- Unchanged limits: the guest can still read and remove a 0xCC (detected at the
+  next check, up to 1 s), and paths around the dispatcher are not seen.
+- `kraft run <kernel>` must not see a Kraftfile in the current directory or a
+  parent (it then asks which context to use and fails with `--no-prompt`).
+  The command line (`/usr/bin/nginx`) goes after the kernel path, not in `-a`.
 
 ## Notes for later phases
 

@@ -10,3 +10,4 @@ logs/bench_p11_raw/
 agentless/traps.json
 agentless/experiments/*.o
 agentless/experiments/*.bin
+agentless/build/

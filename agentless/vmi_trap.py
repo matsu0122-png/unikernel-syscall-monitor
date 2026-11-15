@@ -29,6 +29,13 @@ Nothing runs in the guest and QEMU is the unmodified distro binary:
 7. Records -> JSONL (Phase 2-8 / collector format, host timestamps) and
    OTel spans through collector/traces.py (one trace per connection).
 
+Baked images (agentless/bake_traps.py, Phase 11-2): --traps is the image's
+.traps.json. The selection comes from it (--group/--syscalls refused); the
+0xCCs are already in guest RAM, so step 3 only registers those addresses
+with the gdbstub, and step 2/6 expect 0xCC there. agentless/qemu-trap.sh runs
+this with --mon and --ready-file while QEMU is still paused (-S), so every
+baked site is registered before the guest's first instruction.
+
 Times are host CLOCK_REALTIME when the stop reaches this tool, so no
 guest-host offset is involved; dur_us includes the trap cost.
 """
@@ -54,7 +61,7 @@ sys.path.insert(0, str(ROOT / "legacy"))
 
 from attach_gdbstub import (_recv_until_prompt, attach_gdbserver,  # noqa: E402
                             find_free_port, find_instance_runtime_dir, hmp_command)
-from gen_traps import Elf  # noqa: E402
+from gen_traps import Elf, select  # noqa: E402
 from rsp import R12, RAX, RIP, RSP, Rsp, stop_signal  # noqa: E402
 from syscall_table import SYSCALL_TABLE  # noqa: E402
 
@@ -193,10 +200,17 @@ def untrap_snippet(site, orig, target):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--instance", required=True, help="kraft instance name")
-    ap.add_argument("--traps", default=str(HERE / "traps.json"))
+    tgt = ap.add_mutually_exclusive_group(required=True)
+    tgt.add_argument("--instance", help="kraft instance name")
+    tgt.add_argument("--mon", help="QEMU HMP monitor socket (used by qemu-trap.sh)")
+    ap.add_argument("--traps", default=str(HERE / "traps.json"),
+                    help="trap table (gen_traps.py) or a baked image's .traps.json")
+    ap.add_argument("--ready-file", help="write this file once every trap is registered")
+    ap.add_argument("--resume-by-qemu", action="store_true",
+                    help="do not resume the guest after arming; its launcher does "
+                         "(QEMU paused with -S, kraftkit's QMP cont)")
     sel = ap.add_mutually_exclusive_group()
-    sel.add_argument("--group", default="NETFD", help="NET, NETFD, FILE, TIME, ALL")
+    sel.add_argument("--group", help="NET, NETFD (default), FILE, TIME, ALL")
     sel.add_argument("--syscalls", help="comma-separated names, e.g. connect,socket")
     ap.add_argument("--no-ret", action="store_true", help="entry only (no exit trap)")
     ap.add_argument("--jsonl", default=str(ROOT / "logs" / "agentless.jsonl"))
@@ -215,15 +229,22 @@ def main():
 
     traps = json.loads(Path(a.traps).read_text())
     sites = {int(k): v for k, v in traps["sites"].items()}
-    if a.syscalls:
-        by_name = {v["name"]: nr for nr, v in sites.items()}
-        missing = [n for n in a.syscalls.split(",") if n not in by_name]
-        if missing:
-            raise SystemExit(f"not dispatched in this image: {missing}")
-        nrs = sorted(by_name[n] for n in a.syscalls.split(","))
+    baked = traps.get("baked")
+    if baked:
+        if a.group or a.syscalls:
+            raise SystemExit("baked image: the selection is fixed at build time "
+                             f"({baked['selection']}); drop --group/--syscalls")
+        nrs = baked["nrs"]
     else:
-        nrs = traps["groups"][a.group.upper()]
-    entry = {sites[nr]["site"]: (nr, sites[nr]["target"]) for nr in nrs}
+        nrs = select(traps, a.group, a.syscalls)
+    # site -> (nrs that reach it, jump target); a shared case block has several
+    entry = {}
+    for nr in nrs:
+        s = sites[nr]
+        entry.setdefault(s["site"], ([], s["target"]))[0].append(nr)
+    baked_sites = set(baked["sites"]) if baked else set()
+    if baked and baked_sites != set(entry):
+        raise SystemExit(f"{a.traps}: baked sites do not match its nrs")
     exit_site = traps["exit_site"]
     want_ret = not a.no_ret
     regs_off = traps["regs_layout"]
@@ -241,8 +262,8 @@ def main():
                ("jump_table", d["table"], elf.read(d["table"], (d["nr_max"] + 1) * 8)),
                ("caller", c["addr"], elf.read(c["addr"], c["size"]))]
 
-    runtime = find_instance_runtime_dir(a.instance)
-    mon = runtime / "mon.sock"
+    mon = Path(a.mon) if a.mon else find_instance_runtime_dir(a.instance) / "mon.sock"
+    instance = a.instance or mon.parent.name
     port = a.port or find_free_port(1240)
     try:
         attach_gdbserver(mon, port)
@@ -254,8 +275,10 @@ def main():
     hmp = Hmp(mon)
 
     # 2. the running image must be the one the table was made from
+    #    (a baked image: with 0xCC on exactly the baked sites)
     for name, base, ref in regions:
         live = hmp.xp(base, len(ref))
+        ref = bytes(0xCC if base + i in baked_sites else b for i, b in enumerate(ref))
         if live != ref:
             diff = [hex(base + i) for i, (x, y) in enumerate(zip(live, ref)) if x != y]
             raise SystemExit(f"live {name} differs from {traps['image_dbg']} at "
@@ -263,8 +286,9 @@ def main():
 
     names = {nr: SYSCALL_TABLE.get(nr, (sites[nr]["name"], 6)) for nr in sites}
     out = open(a.jsonl, "a", buffering=1)
-    provider, tracer = setup_otel(a.otel, a.otlp_endpoint, a.otel_file, a.instance,
-                                  traps["image_dbg_sha256"])
+    provider, tracer = setup_otel(a.otel, a.otlp_endpoint, a.otel_file, instance,
+                                  baked["image_sha256"] if baked
+                                  else traps["image_dbg_sha256"])
     tb = None
     if tracer is not None:
         from traces import TraceBuilder
@@ -305,12 +329,18 @@ def main():
     signal.signal(signal.SIGTERM, on_signal)
 
     reason = rsp.start()
-    log(f"attached on port {port} ({reason}); arming {len(entry)} traps: "
+    log(f"attached on port {port} ({reason}); "
+        + (f"registering {len(entry)} baked traps ({baked['selection']}): " if baked
+           else f"arming {len(entry)} traps: ")
         + ",".join(names[n][0] for n in nrs))
     armed = set()
     for site in entry:
+        # baked: the byte is already 0xCC; Z0 makes QEMU/KVM report the hit
+        # to us instead of injecting #BP into the guest
         rsp.insert(site)
         armed.add(site)
+    if a.ready_file:
+        Path(a.ready_file).write_text(f"{port}\n")
     check = None
     if a.check_interval_s > 0:
         check = Integrity(hmp, regions, armed, {exit_site}, a.check_interval_s,
@@ -342,9 +372,13 @@ def main():
     pending = {}            # rsp at entry -> Rec
     exit_armed = False
     seq = 0
+    guest_gone = False
     if check is not None:
         check.start()
-    rsp.cont()
+    # With --resume-by-qemu, kraftkit's QMP `cont` resumes the guest; the
+    # stub (QEMU 6.2) still reports each later stop to this client.
+    if not a.resume_by_qemu:
+        rsp.cont()
     t_start = time.time()
     try:
         while True:
@@ -354,6 +388,7 @@ def main():
             sig = stop_signal(reply)
             if sig is None:
                 log(f"guest exited: {reply}")
+                guest_gone = True
                 break
             stats["stops"] += 1
             done = []
@@ -372,14 +407,15 @@ def main():
                 regs = rsp.regs()
                 pc = regs[RIP]
                 if pc in entry:
-                    nr, target = entry[pc]
+                    site_nrs, target = entry[pc]
                     base = regs[R12]
                     raw = rsp.read(base + 0x40, 0x48)
                     v = lambda off: struct.unpack_from("<Q", raw, off - 0x40)[0]  # noqa: E731
                     nr_saved = v(regs_off["orig_rax"])
-                    if nr_saved != nr:
+                    nr = nr_saved if nr_saved in site_nrs else site_nrs[0]
+                    if nr_saved not in site_nrs:
                         stats["nr_mismatch"] += 1
-                        alert("nr_mismatch", {"site": hex(pc), "site_nr": nr,
+                        alert("nr_mismatch", {"site": hex(pc), "site_nrs": site_nrs,
                                               "orig_rax": nr_saved})
                     args = [v(regs_off[r]) for r in ("rdi", "rsi", "rdx", "r10", "r8", "r9")]
                     rec = Rec(nr, args, base, seq, t)
@@ -434,11 +470,13 @@ def main():
         if check is not None:
             check.stop_ev.set()
         try:
-            if not rsp.sock._closed:
+            if not rsp.sock._closed and not guest_gone:
                 for site in list(armed) + ([exit_site] if exit_armed else []):
                     rsp.remove(site)
                 rsp.detach()
-                log("traps removed, detached")
+                log("traps removed, detached"
+                    + ("; the baked 0xCCs stay in the guest: its next selected "
+                       "syscall crashes it" if baked else ""))
         except Exception as e:
             log(f"cleanup: {e}")
         for r in pending.values():

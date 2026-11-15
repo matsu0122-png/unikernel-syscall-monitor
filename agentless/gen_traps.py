@@ -52,22 +52,36 @@ class Elf:
     def __init__(self, path):
         self.data = Path(path).read_bytes()
         d = self.data
-        if d[:4] != b"\x7fELF" or d[4] != 2:
-            raise SystemExit(f"{path}: not ELF64")
-        shoff, = struct.unpack_from("<Q", d, 0x28)
-        shentsize, shnum = struct.unpack_from("<HH", d, 0x3A)
+        if d[:4] != b"\x7fELF" or d[4] not in (1, 2):
+            raise SystemExit(f"{path}: not ELF")
+        # The .dbg is ELF64; the bootable multiboot image is ELF32 with the
+        # same virtual addresses.
+        if d[4] == 2:
+            shoff, = struct.unpack_from("<Q", d, 0x28)
+            shentsize, shnum = struct.unpack_from("<HH", d, 0x3A)
+            sh_fmt = "<IIQQQQIIQQ"
+        else:
+            shoff, = struct.unpack_from("<I", d, 0x20)
+            shentsize, shnum = struct.unpack_from("<HH", d, 0x2E)
+            sh_fmt = "<IIIIIIIIII"
+        self.entry, = struct.unpack_from("<Q" if d[4] == 2 else "<I", d, 0x18)
         self.sections = []
         for i in range(shnum):
             (_, sh_type, _, addr, off, size, *_rest) = struct.unpack_from(
-                "<IIQQQQIIQQ", d, shoff + i * shentsize)
+                sh_fmt, d, shoff + i * shentsize)
             if addr and sh_type != 8:          # skip SHT_NOBITS
                 self.sections.append((addr, off, size))
 
-    def read(self, vaddr, n):
+    def offset(self, vaddr, n=1):
+        """File offset of vaddr (n bytes must lie in one section)."""
         for addr, off, size in self.sections:
             if addr <= vaddr and vaddr + n <= addr + size:
-                return self.data[off + vaddr - addr: off + vaddr - addr + n]
+                return off + vaddr - addr
         raise KeyError(hex(vaddr))
+
+    def read(self, vaddr, n):
+        off = self.offset(vaddr, n)
+        return self.data[off:off + n]
 
 
 def symbols(path):
@@ -104,17 +118,13 @@ def parse_groups():
     return groups
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dbg", help="the image's .dbg ELF (symbols; same .text as the image)")
-    ap.add_argument("-o", "--out", default=str(HERE / "traps.json"))
-    a = ap.parse_args()
-
-    syms = symbols(a.dbg)
-    elf = Elf(a.dbg)
+def build_table(dbg):
+    """Trap table (dict) for the image whose .dbg is `dbg`; SystemExit when
+    the dispatcher does not have the expected shape."""
+    syms = symbols(dbg)
+    elf = Elf(dbg)
     d_addr, d_size = syms[DISPATCHER]
-    insns = disasm(a.dbg, d_addr, d_size)
+    insns = disasm(dbg, d_addr, d_size)
     by_addr = {addr: i for i, (addr, _) in enumerate(insns)}
 
     # Prologue: cmpq $MAX,0x80(%rdi); ja DEFAULT; mov 0x80(%rdi),%rax; jmp *TABLE(,%rax,8)
@@ -135,7 +145,7 @@ def main():
         raise SystemExit(f"{DISPATCHER} writes r12: {clobber}")
 
     c_addr, c_size = syms[CALLER]
-    cins = disasm(a.dbg, c_addr, c_size)
+    cins = disasm(dbg, c_addr, c_size)
     calls = [i for i, (_, s) in enumerate(cins)
              if re.fullmatch(rf"call\s+{d_addr:x} <{DISPATCHER}>", s)]
     if len(calls) != 1 or not any(re.fullmatch(r"mov\s+%r12,%rdi", s)
@@ -193,8 +203,8 @@ def main():
         groups[g] = sorted(by_name[n] for n in names if n in by_name)
     groups["ALL"] = sorted(sites)
 
-    out = {
-        "image_dbg": str(Path(a.dbg).resolve()),
+    return {
+        "image_dbg": str(Path(dbg).resolve()),
         "image_dbg_sha256": hashlib.sha256(elf.data).hexdigest(),
         "dispatcher": {"addr": d_addr, "size": d_size, "nr_max": nr_max,
                        "table": table, "default": default},
@@ -209,10 +219,36 @@ def main():
         "unsupported_nrs": unsupported,
         "groups": groups,
     }
+
+
+def select(table, group=None, syscalls=None):
+    """Syscall numbers for a group name or comma-separated syscall names."""
+    sites = table["sites"]
+    if syscalls:
+        by_name = {v["name"]: int(nr) for nr, v in sites.items()}
+        names = [n for n in syscalls.split(",") if n]
+        missing = [n for n in names if n not in by_name]
+        if missing:
+            raise SystemExit(f"not dispatched in this image: {missing}")
+        return sorted(by_name[n] for n in names)
+    key = (group or "NETFD").upper()
+    if key not in table["groups"]:
+        raise SystemExit(f"unknown group {group!r}; have {sorted(table['groups'])}")
+    return list(table["groups"][key])
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("dbg", help="the image's .dbg ELF (symbols; same .text as the image)")
+    ap.add_argument("-o", "--out", default=str(HERE / "traps.json"))
+    a = ap.parse_args()
+
+    out = build_table(a.dbg)
     Path(a.out).write_text(json.dumps(out, indent=1) + "\n")
-    print(f"{len(sites)} trap sites, {len(unsupported)} unsupported nrs, "
-          f"exit site {exit_site:#x}, shared sites {len(shared)} -> {a.out}")
-    for g, nrs in groups.items():
+    print(f"{len(out['sites'])} trap sites, {len(out['unsupported_nrs'])} unsupported nrs, "
+          f"exit site {out['exit_site']:#x}, shared sites {len(out['shared_sites'])} -> {a.out}")
+    for g, nrs in out["groups"].items():
         print(f"  {g}: {len(nrs)}")
 
 
