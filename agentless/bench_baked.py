@@ -45,7 +45,7 @@ HZ = os.sysconf("SC_CLK_TCK")
 # condition -> (image dir under agentless/build or None for base, extra env)
 CONDITIONS = {
     "base": (None, {}),
-    "rare": ("rare", {}),                 # socket,connect: startup only
+    "rare": ("rare", {}),                 # socket,connect: startup only (not recorded)
     "net": ("net", {}),
     "net_otlp": ("net", {"VMI_TRAP_OTEL": "otlp"}),
     "netfd_noret": ("netfd", {"VMI_TRAP_ARGS": "--no-ret"}),

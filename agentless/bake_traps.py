@@ -15,6 +15,13 @@ Post-link build step. Input: the built image and its .dbg (default:
   nginx_qemu-x86_64.traps.json  trap table + "baked": selection, sites,
                                 sha256 of the base and the baked image
 
+Startup boundary (--startup-boundary, default accept4): its site gets a 0xCC
+too, even when it is not selected, recorded as "boundary" in the manifest.
+vmi_trap.py records nothing before nginx's first accept4 (no network input
+reaches nginx before it) and, at that hit, writes the original byte back
+over an unselected boundary. It has to be baked: a breakpoint the host
+inserts before boot is overwritten when the guest's kernel is loaded.
+
 Only the trap byte goes into the guest, no code. The policy is fixed in the
 image: the host cannot forget to arm a selected syscall, and there is no
 window between boot and attach.
@@ -57,6 +64,9 @@ def main():
     sel = ap.add_mutually_exclusive_group(required=True)
     sel.add_argument("--group", help="NET, NETFD, FILE, TIME, ALL (guest/lib-vmitrace/groups.h)")
     sel.add_argument("--syscalls", help="comma-separated names, e.g. connect,socket")
+    ap.add_argument("--startup-boundary", default="accept4",
+                    help="syscall whose first call ends startup (default accept4); "
+                         "'none' bakes no boundary (vmi_trap.py then records startup)")
     ap.add_argument("-o", "--out-dir", help="default agentless/build/<group or names>")
     a = ap.parse_args()
 
@@ -94,8 +104,19 @@ def main():
     if extra:
         print(f"note: shared case blocks also trap nrs {extra}", file=sys.stderr)
 
+    boundary = None
+    if a.startup_boundary != "none":
+        b_nr, b = next(((int(nr), s) for nr, s in table["sites"].items()
+                        if s["name"] == a.startup_boundary), (None, None))
+        if b is None:
+            raise SystemExit(f"--startup-boundary {a.startup_boundary}: not a syscall in the table")
+        boundary = {"name": b["name"], "nr": b_nr, "site": b["site"],
+                    "target": b["target"], "orig_byte": b["orig_byte"],
+                    "selected": b["site"] in sites}
+
     data = bytearray(img.data)
-    for addr in sites:
+    bake = list(sites) + ([boundary["site"]] if boundary and not boundary["selected"] else [])
+    for addr in bake:
         off = img.offset(addr)
         if data[off] != 0xE9:
             raise SystemExit(f"site {addr:#x}: byte {data[off]:#x}, expected 0xe9")
@@ -113,6 +134,7 @@ def main():
         "nrs": baked_nrs,
         "names": [table["sites"][str(nr)]["name"] for nr in baked_nrs],
         "sites": sorted(sites),
+        "boundary": boundary,
         "image": str(out_img.resolve()),
         "image_sha256": sha256(data),
         "base_image": str(image_path.resolve()),
@@ -121,7 +143,9 @@ def main():
     }
     manifest = Path(f"{out_img}.traps.json")
     manifest.write_text(json.dumps(table, indent=1) + "\n")
-    print(f"baked {len(sites)} traps ({','.join(table['baked']['names'])}) -> {out_img}")
+    print(f"baked {len(sites)} traps ({','.join(table['baked']['names'])})"
+          + (f" + startup boundary {boundary['name']}" if boundary and not boundary["selected"]
+             else "") + f" -> {out_img}")
     print(f"manifest -> {manifest}")
 
 

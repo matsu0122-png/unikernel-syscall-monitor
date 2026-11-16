@@ -36,6 +36,17 @@ with the gdbstub, and step 2/6 expect 0xCC there. agentless/qemu-trap.sh runs
 this with --mon and --ready-file while QEMU is still paused (-S), so every
 baked site is registered before the guest's first instruction.
 
+Startup is not recorded (--startup skip, the default for a baked image):
+until nginx's first accept4, i.e. before any network input reaches the
+application, a hit is resumed at once with no record, no argument read and
+no exit trap; only counts go to --stats. The accept4 site is trapped for
+this even when accept4 is not selected: baked by bake_traps.py ("boundary"
+in the manifest; a 0xCC the host inserts before boot is overwritten when the
+guest's kernel is loaded), or a Z0 when attaching to a running instance.
+That trap is retired at its first hit (z0, and for a baked one the original
+byte written back). Integrity checks and trap re-arming run from the start.
+Rationale: docs/phase11_plan.md, "Startup is not monitored".
+
 Times are host CLOCK_REALTIME when the stop reaches this tool, so no
 guest-host offset is involved; dur_us includes the trap cost.
 """
@@ -117,11 +128,16 @@ class Integrity(threading.Thread):
         self.bad = {}          # addr -> live byte currently reported
         self.checks = 0
         self.check_ns = 0
+        self.lock = threading.Lock()   # held while `armed` and guest bytes change
 
     def expected(self, addr, orig):
         return 0xCC if addr in self.armed else orig
 
     def check_once(self):
+        with self.lock:
+            self._check_once()
+
+    def _check_once(self):
         t0 = time.monotonic_ns()
         now_bad = {}
         for name, base, ref in self.regions:
@@ -179,6 +195,7 @@ def setup_otel(kind, endpoint, dump_path, instance, image_sha, selection):
 
 
 # ---------------------------------------------------------------- test only
+SERVING_FROM = "accept4"   # its first call ends startup (no network input before it)
 TEST_CAVE = 0x140d70      # ramfs_rename (330 bytes): not called while serving GET
 
 
@@ -214,6 +231,10 @@ def main():
     sel.add_argument("--group", help="NET, NETFD (default), FILE, TIME, ALL")
     sel.add_argument("--syscalls", help="comma-separated names, e.g. connect,socket")
     ap.add_argument("--no-ret", action="store_true", help="entry only (no exit trap)")
+    ap.add_argument("--startup", choices=("skip", "record"),
+                    help="syscalls before nginx's first accept4: skip (default for a "
+                         "baked image, which starts with the VM) or record (default "
+                         "when attaching to a running instance)")
     ap.add_argument("--jsonl", default=str(ROOT / "logs" / "agentless.jsonl"))
     ap.add_argument("--otel", choices=("otlp", "file", "none"), default="none")
     ap.add_argument("--otlp-endpoint", default="127.0.0.1:14317")
@@ -246,7 +267,21 @@ def main():
     baked_sites = set(baked["sites"]) if baked else set()
     if baked and baked_sites != set(entry):
         raise SystemExit(f"{a.traps}: baked sites do not match its nrs")
+    baked_boundary = baked.get("boundary") if baked else None
+    if baked_boundary and not baked_boundary["selected"]:
+        baked_sites.add(baked_boundary["site"])     # 0xCC in the image as well
     exit_site = traps["exit_site"]
+    skip_startup = (a.startup or ("skip" if baked else "record")) == "skip"
+    serving_nr = next(nr for nr, v in sites.items() if v["name"] == SERVING_FROM)
+    serving_site = sites[serving_nr]["site"]
+    if baked and skip_startup and serving_site not in entry and not baked_boundary:
+        raise SystemExit(f"{a.traps}: no startup boundary baked and {SERVING_FROM} not "
+                         "selected; rebake with agentless/bake_traps.py or pass "
+                         "--startup record")
+    # trapped only to find the end of startup (accept4 not selected); a baked
+    # one must be retired even when startup is recorded
+    boundary_only = serving_site not in entry and (
+        skip_startup or bool(baked_boundary and not baked_boundary["selected"]))
     want_ret = not a.no_ret
     regs_off = traps["regs_layout"]
     untrap = None
@@ -303,7 +338,10 @@ def main():
     stats = {"hits": {}, "entries": 0, "exits": 0, "unmatched_exits": 0,
              "exit_step_overs": 0, "nr_mismatch": 0, "foreign_traps": 0,
              "interrupts": 0, "rearmed": 0, "alerts": {}, "stop_handling_ns": 0,
-             "stops": 0}
+             "stops": 0, "startup": "skip" if skip_startup else "record"}
+    if skip_startup:
+        stats.update(startup_stops=0, startup_hits={})
+    serving = not skip_startup
 
     def alert(kind, info):
         stats["alerts"][kind] = stats["alerts"].get(kind, 0) + 1
@@ -344,6 +382,11 @@ def main():
         # to us instead of injecting #BP into the guest
         rsp.insert(site)
         armed.add(site)
+    if boundary_only:
+        rsp.insert(serving_site)
+        armed.add(serving_site)
+    if skip_startup:
+        log(f"startup not recorded: records start at the first {SERVING_FROM}")
     if a.ready_file:
         Path(a.ready_file).write_text(f"{port}\n")
     check = None
@@ -403,6 +446,8 @@ def main():
                 todo = list(repair_q)
                 repair_q.clear()
             for site in todo:               # re-arm a trap the guest removed
+                if site not in armed:       # the boundary trap, already retired
+                    continue
                 rsp.remove(site)
                 rsp.insert(site)
                 stats["rearmed"] += 1
@@ -411,7 +456,36 @@ def main():
             if sig == SIGTRAP_:
                 regs = rsp.regs()
                 pc = regs[RIP]
-                if pc in entry:
+                if not serving and pc == serving_site:
+                    serving = True
+                    stats["serving_since"] = t / 1e9
+                    with out_lock:
+                        out.write(json.dumps({"ts": t / 1e9, "event": "serving_start",
+                                              "startup_stops": stats["startup_stops"]})
+                                  + "\n")
+                    log(f"first {SERVING_FROM}: recording from here "
+                        f"({stats['startup_stops']} startup stops not recorded)")
+                if boundary_only and pc == serving_site and serving_site in armed:
+                    # retire the boundary trap; the guest is stopped and the
+                    # check thread is held off while the byte and `armed` change
+                    with check.lock if check is not None else threading.Lock():
+                        rsp.remove(serving_site)
+                        if serving_site in baked_sites:
+                            rsp.write(serving_site, bytes([sites[serving_nr]["orig_byte"]]))
+                        armed.discard(serving_site)
+                    log(f"startup boundary trap at {serving_site:#x} retired")
+                    rsp.set_reg(RIP, sites[serving_nr]["target"])
+                    rsp.cont()
+                    stats["stop_handling_ns"] += time.monotonic_ns() - t0
+                    continue
+                if not serving and pc in entry:
+                    # startup: resume at the jump target, nothing recorded
+                    site_nrs, target = entry[pc]
+                    stats["startup_stops"] += 1
+                    key = names[site_nrs[0]][0] if len(site_nrs) == 1 else hex(pc)
+                    stats["startup_hits"][key] = stats["startup_hits"].get(key, 0) + 1
+                    rsp.set_reg(RIP, target)
+                elif pc in entry:
                     site_nrs, target = entry[pc]
                     base = regs[R12]
                     raw = rsp.read(base + 0x40, 0x48)

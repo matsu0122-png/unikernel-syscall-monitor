@@ -2433,6 +2433,51 @@ earlier than Phase 10-7's port-reuse stall at about 3,100 and is not
 explained here. The script ends an instance at its first stall and the
 tables leave those runs out.
 
+### Startup is not recorded (2026-11-16)
+
+Decision: syscalls before nginx's first `accept4` are not recorded. No
+network input reaches nginx before it, and startup runs only the image's own
+code (checked against the image before the guest's first instruction, and
+`vmitrace.image_sha256`). The point is the watch list, not boot time: nginx
+calls `socket` x5 and `connect` x4 (AF_UNIX, ENOENT) at startup, so with
+startup out of the records, `socket,connect` is "never while serving" and
+any record of it is an alert.
+
+- `agentless/bake_traps.py --startup-boundary accept4` (default): a 0xCC on
+  the `accept4` site even when it is not selected (`"boundary"` in the
+  manifest). A breakpoint the host inserts before boot is not enough: the
+  first try (Z0 only) saw `trap_removed` on 0x14100b at boot, with the image
+  byte 0xe9 back, i.e. the guest's kernel load overwrote it. With
+  `--check-interval-s 0` it would never have been re-armed and nothing would
+  have been recorded.
+- `vmi_trap.py --startup skip` (default for a baked image; `record` for an
+  attach to a running instance): before the boundary, a hit is resumed at
+  the jump target with no register/argument read, no exit trap and no
+  record; `--stats` gets `startup_stops` and `startup_hits`. The JSONL gets
+  one `{"event": "serving_start"}` line. An unselected boundary is retired at
+  its first hit (z0, original byte written back, while the integrity check
+  is held off), in both modes. Integrity checks and re-arming run from the
+  start. A baked image without a boundary and without `accept4` selected is
+  refused under `skip`.
+- Measured on fresh instances (5 requests each, JSONL only):
+
+| image | startup stops (not recorded) | records | alerts |
+|---|---:|---|---|
+| rare (`socket,connect`) | 9 (socket 5, connect 4) | **0** | 0 |
+| rare, `--check-interval-s 0` | 9 | 0 | 0 |
+| rare, `--startup record` | - | 9 (socket 5, connect 4) | 0 |
+| NET | 14 | 20 (accept4, recvfrom, setsockopt) | 0 |
+| FILE (boundary unselected) | 154 | 17 | 0 |
+| ALL | 288 (42 syscalls) | 85 | 0 |
+
+  `--test-guest-untrap accept4` on NET: `trap_removed` and `trap_rearmed`
+  as before. Boot (kraft run -> first HTTP 200) is unchanged at 3.6-3.8 s:
+  it is the pause for the code check and registration, not the startup
+  stops.
+- 33 syscalls occur only at startup in the ALL run (`bind`, `listen`,
+  `connect`, `socket`, `socketpair`, `mmap`, `mprotect`, `mkdir`, `futex`,
+  `rt_sigaction`, ...): candidates for the "never while serving" set.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol

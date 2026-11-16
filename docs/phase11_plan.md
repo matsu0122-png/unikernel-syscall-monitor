@@ -51,11 +51,22 @@ host tool.
 Open from 11-2:
 - Should the build step run inside `kraft build` (a Kconfig choice instead of a
   separate command)? Upstream Unikraft has no post-link hook used here yet.
-- `connect`/`socket` are not "never used": nginx calls them at startup (AF_UNIX
-  connect x4, ENOENT). Normal operation must be split into startup and serving
-  when choosing what to watch.
+- ~~`connect`/`socket` are not "never used": nginx calls them at startup.~~
+  Done 2026-11-16: startup is not recorded (below).
 - Tool exit = the service stops at the next selected syscall. Decide whether
   that is wanted, or the tool should hand over before exiting.
+
+## Done (2026-11-16): startup is not monitored
+
+User's decision: syscalls at boot need not be monitored. Records start at
+nginx's first `accept4` (no network input before it; startup code is the
+checked image). Use case behind it: always-on, low-frequency detection in
+production, where a hit on a "never while serving" syscall is an alert.
+The boundary is baked (`bake_traps.py --startup-boundary`, default accept4)
+because a host breakpoint inserted before boot is overwritten by the kernel
+load. `vmi_trap.py --startup skip|record`. README "Startup is not recorded".
+Result: the rare image (`socket,connect`) gives 0 records in normal
+operation.
 
 ## Next
 
@@ -63,8 +74,8 @@ Open from 11-2:
   `accept4_mismatch`: host connections vs. trapped `accept4`. It catches what the
   1-second byte check misses: a removal reverted between checks, or a bypass of the
   dispatcher.
-- **Decide what to watch.** Pick the "never in normal operation" syscalls for nginx
-  (connect, socket, openat outside the docroot, ...). Measure normal operation with
+- **Decide what to watch.** Pick the "never while serving" syscalls for nginx
+  (connect, socket, execve, ...; 33 occur only at startup in the ALL run). Measure normal operation with
   that set, and run a simulated attack that triggers it.
 - **Cost per stop.** Fewer round trips: read r12 and rsp with `p` instead of `g`,
   or batch the commands; keep the exit trap armed while hits are frequent. Measure
