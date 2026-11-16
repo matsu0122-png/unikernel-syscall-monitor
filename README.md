@@ -2367,6 +2367,72 @@ What baking changes:
   parent (it then asks which context to use and fails with `--no-prompt`).
   The command line (`/usr/bin/nginx`) goes after the kernel path, not in `-a`.
 
+### Performance of baked selective trapping (2026-11-16)
+
+`agentless/bench_baked.py`, `logs/bench_p11_baked.csv` (`.log`). Per
+condition, `ab` concurrency (1 and 5) and round (2, order reversed in the
+second): a fresh `kraft run --qemu agentless/qemu-trap.sh` instance, one
+warm-up curl, then `ab -n 400` x3. Records go to JSONL only (`VMI_TRAP_OTEL=none`)
+except in `net_otlp` (Jaeger). One vCPU, governor `powersave` (no root),
+other containers running: the same conditions as the Phase 11 table.
+Mean ± stdev over the runs; per-request CPU from `/proc/<pid>/stat`
+(10 ms ticks over 400 requests, so ±25 us/req resolution).
+
+| selection (baked sites) | stops/req | c=1 req/s | c=1 mean / p99 ms | c=5 req/s | % of base (c=5) | c=5 p99 ms | tool CPU us/req | QEMU CPU us/req |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| base (no traps) | 0 | 5,569 ± 2,447 | 0.2 / 0.6 | 9,296 ± 5,530 | 100 | 1.2 | - | 213-305 |
+| rare: `socket,connect` (2) | 0 | 7,409 ± 490 | 0.1 / 0.0 | 12,186 ± 4,679 | 131 (noise) | 1.7 | 17-20 | 154-220 |
+| NET (16) | 4 | 664 ± 97 | 1.5 / 5.0 | 752 ± 58 | 8.1 | 18.5 | 531-588 | 1,269-1,467 |
+| NET + OTLP to Jaeger | 4 | 633 ± 22 | 1.6 / 2.6 | 645 ± 52 | 6.9 | 36.7 | 870-904 | 1,325-1,370 |
+| NETFD, entry only (22) | 5 | 578 ± 42 | 1.7 / 4.8 | 580 ± 59 | 6.2 | 25.2 | 700-754 | 1,592-1,619 |
+| NETFD (22) | 10 | 310 ± 17 | 3.2 / 7.3 | 314 ± 11 | 3.4 | 26.3 | 1,271-1,292 | 2,929-2,954 |
+| FILE (42) | 6 | 506 ± 14 | 2.0 / 3.0 | 471 ± 69 | 5.1 | 26.0 | 767-863 | 1,825-2,000 |
+| ALL (185) | 24 (c=1), 19 (c=5) | 136 ± 1 | 7.4 / 9.0 | 170 ± 8 | 1.8 | 46.2 | 2,450-2,983 | 5,494-6,629 |
+
+Per instance: boot (kraft run -> first HTTP 200) 2.5 s for base and 3.6-3.8 s
+for every baked image, whatever the selection (QEMU paused while
+`vmi_trap.py` checks the code and registers the sites, plus the startup
+syscalls' traps). Mean stop handling in the tool 163-206 us. Integrity check
+every 1 s, 9.5-16.5 ms each. `nr_mismatch`, unmatched exits, foreign traps and
+alerts: 0 in all 32 instances. Records per request are the same in every run
+of a condition (NET 2, NETFD 5, FILE 3, ALL 12 at c=1).
+
+What the numbers say:
+
+- **The cost is the number of stops, not the number of baked sites.** At c=1
+  the added latency over base divided by stops per request is 0.34 ms (NET),
+  0.31 (NETFD entry only), 0.31 (FILE), 0.31 (NETFD) and 0.30 ms (ALL): **about
+  300 us per stop**, the same as Phase 11's runtime-armed figure. Of that, the
+  tool's own handling is about 170 us; tool CPU is about 125-150 us and QEMU's
+  extra CPU about 275 us per stop. FILE bakes twice as many sites as NETFD but
+  is faster, because nginx serving GET hits fewer of them.
+- **Sites that are not hit cost nothing measurable.** `rare` (socket and
+  connect, used only at startup) is within the noise of base (base's own
+  stdev is 40-60% on this host). This is the use the method is for: trap
+  syscalls a normal nginx does not make while serving.
+- **Baking costs nothing at run time against runtime arming** (Phase 11 table,
+  c=5): NET 752 vs 778, NETFD 314 vs 321, ALL 170 vs 161 req/s. The one-time
+  cost is about 1.2 s more boot.
+- **Dropping return values halves the stops:** NETFD entry only gives 1.9x the
+  throughput of NETFD (578 vs 310 req/s at c=1).
+- **Sending to Jaeger** adds about 300 us of tool CPU per request (2 records),
+  -5% (c=1) and -14% (c=5) throughput, and doubles c=5's p99 (18.5 -> 36.7 ms):
+  the export runs in the same Python process as the stop handling.
+- **Concurrency does not help** for traced conditions: every stop halts the
+  whole VM, so c=5 only adds queueing (NETFD mean 3.2 -> 15.9 ms at the same
+  req/s). ALL makes fewer syscalls per request at c=5 (9.5 records vs 12, as
+  `epoll_wait` returns more events per call), hence its higher c=5 req/s.
+
+**Stalls.** 7 of 96 `ab` runs gave up (`-s 10`): base, rare, NET, NET+OTLP,
+NETFD entry only, FILE and ALL, at c=1 and c=5, after 400-800 connections of a
+fresh instance. Base and rare stalled too, so the traps are not the cause.
+A first full run with 2,400 connections per instance stalled at about 2,000
+(NETFD entry only); the guest then answered again (`kvm_vcpu_block`, the tool
+waiting in `wait_stop`, the connections in CLOSE-WAIT on slirp). This is
+earlier than Phase 10-7's port-reuse stall at about 3,100 and is not
+explained here. The script ends an instance at its first stall and the
+tables leave those runs out.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol
