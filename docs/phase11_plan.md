@@ -66,7 +66,8 @@ The boundary is baked (`bake_traps.py --startup-boundary`, default accept4)
 because a host breakpoint inserted before boot is overwritten by the kernel
 load. `vmi_trap.py --startup skip|record`. README "Startup is not recorded".
 Result: the rare image (`socket,connect`) gives 0 records in normal
-operation.
+operation. Performance rerun: serving and boot unchanged, startup stops
+constant per selection (README "Performance with startup not recorded").
 
 ## Next
 

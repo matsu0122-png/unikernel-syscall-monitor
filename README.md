@@ -2478,6 +2478,43 @@ any record of it is an alert.
   `connect`, `socket`, `socketpair`, `mmap`, `mprotect`, `mkdir`, `futex`,
   `rt_sigaction`, ...): candidates for the "never while serving" set.
 
+### Performance with startup not recorded (2026-11-16)
+
+`agentless/bench_baked.py --out logs/bench_p11_startup.csv --raw
+logs/bench_p11_raw/startup` (`.log`): the same procedure and conditions as
+"Performance of baked selective trapping" above (fresh instance per
+condition, concurrency and round; `ab -n 400` x3; governor `powersave`;
+other containers running), with every image rebaked with the `accept4`
+boundary and `--startup skip`. Previous run -> this run, mean ± stdev:
+
+| selection | c=1 req/s | c=5 req/s | records/req (c=1) | tool CPU us/req (c=1) | boot s | startup stops (not recorded) |
+|---|---|---|---|---|---|---:|
+| base (no traps) | 5,569 -> 6,334 ± 1,893 | 9,296 -> 13,903 ± 4,148 | 0 -> 0 | - | 2.47 -> 2.47 | - |
+| rare: `socket,connect` | 7,409 -> 4,782 ± 1,786 | 12,186 -> 10,293 ± 5,277 | 0 -> **0** | 20 -> 12 | 3.66 -> 3.66 | 9 |
+| NET | 664 -> 656 ± 89 | 752 -> 747 ± 44 | 2 -> 2 | 588 -> 592 | 3.65 -> 3.71 | 14 |
+| NET + OTLP to Jaeger | 633 -> 621 ± 72 | 645 -> 641 ± 73 | 2 -> 2 | 870 -> 883 | 3.78 -> 3.84 | 14 |
+| NETFD, entry only | 578 -> 586 ± 9 | 580 -> 551 ± 95 | 5 -> 5 | 700 -> 695 | 3.75 -> 3.68 | 47 |
+| NETFD | 310 -> 303 ± 15 | 314 -> 314 ± 16 | 5 -> 5 | 1,292 -> 1,346 | 3.69 -> 3.69 | 47 |
+| FILE | 506 -> 503 ± 13 | 471 -> 507 ± 35 | 3 -> 3 | 767 -> 767 | 3.68 -> 3.66 | 154 |
+| ALL | 136 -> 134 ± 3 | 170 -> 175 ± 1 | 12 -> 12 | 2,983 -> 3,021 | 3.69 -> 3.78 | 288 |
+
+- **Serving performance is unchanged.** Stops per request are the same, so
+  every traced condition is within a few percent of the previous run.
+- **rare stops nowhere while serving and writes 0 records.** Its req/s is
+  within base's own spread (stdev 30-40% here). Neither the previous 131% of
+  base nor this run's 74% means anything; compare req/s, not % of base.
+- **Boot is unchanged** (3.66-3.84 s against 2.47 s for base): it is the
+  pause for the code check and registration, not the startup stops (up to
+  288).
+- **Startup stops are identical in every instance** of a condition (9, 14,
+  47, 154, 288), as startup is deterministic. A different count could itself
+  be a signal.
+- Anomalies: `nr_mismatch`, foreign traps, unmatched exits and alerts are 0
+  in all 32 instances.
+- Stalls: 4 of 96 `ab` runs (previous run 7): NETFD entry only, NETFD, FILE
+  and ALL, one each. None in base this time, but base stalled in the previous
+  run, so the traps are still not the suspected cause.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol

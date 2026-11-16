@@ -183,7 +183,8 @@ def run_condition(cond, c, rnd, a, raw, workdir):
     sh("kraft", "stop", name)
     sh("kraft", "rm", name)
     keep = ("stops", "entries", "exits", "unmatched_exits", "nr_mismatch", "foreign_traps",
-            "alerts", "mean_stop_handling_us", "integrity_checks", "mean_check_ms")
+            "alerts", "mean_stop_handling_us", "integrity_checks", "mean_check_ms",
+            "startup", "startup_stops")
     s = json.dumps({k: st.get(k) for k in keep}) if st else ""
     if s:
         print(f"{tag:16s} stats {s}", flush=True)
@@ -202,6 +203,8 @@ def main():
     ap.add_argument("--conditions", default=",".join(CONDITIONS))
     ap.add_argument("--host-port", type=int, default=8093)
     ap.add_argument("--out", default=str(ROOT / "logs" / "bench_p11_baked.csv"))
+    ap.add_argument("--raw", default=str(ROOT / "logs" / "bench_p11_raw" / "baked"),
+                    help="per-instance JSONL and stats")
     a = ap.parse_args()
     a.conc = [int(x) for x in a.conc.split(",")]
     conds = a.conditions.split(",")
@@ -210,7 +213,7 @@ def main():
             sys.exit(f"unknown condition {cnd}; have {list(CONDITIONS)}")
     if a.reps * a.n > 1500:
         sys.exit("reps * n > 1500: TIME_WAIT stall per instance (seen at ~2,000)")
-    raw = ROOT / "logs" / "bench_p11_raw" / "baked"
+    raw = Path(a.raw).resolve()       # kraft runs in a temporary directory
     raw.mkdir(parents=True, exist_ok=True)
 
     rows = []
