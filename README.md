@@ -2515,6 +2515,63 @@ boundary and `--startup skip`. Previous run -> this run, mean ± stdev:
   and ALL, one each. None in base this time, but base stalled in the previous
   run, so the traps are still not the suspected cause.
 
+### Jaeger UI and how to read it (2026-11-17)
+
+A running NET instance (`ae8e3ec494e3`, baked, startup not recorded,
+default OTLP to `deploy/docker-compose.yml`'s Jaeger 2.22.0) and 4 curls:
+
+- `docs/img/phase11_2_jaeger_search.png`: service `vmitrace-agentless`, 4
+  traces. 3 are `vmitrace-agentless: connection` (5 spans, 2.5-2.7 ms) and
+  the newest is listed by its trace id (4 spans): its root had not been sent
+  yet (see below). No `event-loop` trace: startup is not recorded, and NET
+  has nothing outside connections while serving.
+- `docs/img/phase11_2_jaeger_connection_trace.png`: one connection
+  (`16cfecf`), 2.5 ms: `connection` > accept4 625 us (ret 7), recvfrom
+  344 us (ret 78), setsockopt 366 us, recvfrom 342 us (ret 0).
+- The spans match the JSONL (`logs/agentless-ae8e3ec494e3.jsonl`, via
+  `vmitrace.idx`).
+
+Viewing it from another machine: the UI listens on 127.0.0.1 only, so
+forward the port over SSH (`ssh -L 26686:127.0.0.1:26686 <host>`, or
+`LocalForward` in `~/.ssh/config`) and open http://localhost:26686.
+
+Screenshots: headless Firefox with a wrapper page whose image is served
+8 s late, as in 10-4. This host's Firefox is a snap and cannot read files
+under `/tmp` ("Could not find profile folder", or a hang); the wrapper and
+profile have to be under `~/snap/firefox/common/`.
+
+Reading it:
+
+- Search page: one row per trace. `connection` = one accepted TCP
+  connection (one fd). Spans = syscalls caught for it plus the root; with NET
+  a normal request is 5. The scatter plot is start time against duration.
+- Trace page: the children of `connection` are that connection's syscalls in
+  order. Click a span for its tags:
+
+| tag | meaning |
+|---|---|
+| `syscall.ret` | return value (accept4: the new fd; recvfrom: bytes, 0 = peer closed) |
+| `syscall.args` | arguments, hex (`0x7` = fd 7) |
+| `syscall.nr` | syscall number (288 accept4, 45 recvfrom, 54 setsockopt) |
+| `syscall.errno`, `syscall.errno_name` | on failure; the span is then ERROR (red) |
+| `vmitrace.attribution` | why it belongs to the connection: `accept` (accept4's return), `fd` (fd argument), `inferred` (same thread, last connection) |
+| `vmitrace.idx` | the record's `idx` in the JSONL |
+| `vmitrace.close_reason` (root) | `by_close`, `by_eof_or_shutdown`; `idle` or `fd_reused` mean the end was not seen |
+| resource `vmitrace.selection`, `.instance`, `.image_sha256` | baked selection (`baked:NET`), QEMU `-name`, image hash |
+
+- **Span durations are mostly the monitor's cost**, about 300 us per stop,
+  not nginx's time in the syscall. Order, return values, counts and the shape
+  of each connection are what the traces tell.
+- **The newest connection has no root yet.** NET has no `close`, so a
+  connection ends at recvfrom = 0 and is closed when the thread's next
+  record arrives (or at idle/flush). Until then the trace is listed by id and
+  its spans carry the Jaeger warning "parent span ID ... is not in the trace".
+  The next request closes it. Spans also arrive about 5 s late (batch
+  export).
+- Things to look for: `integrity.trap_removed` / `trap_rearmed` /
+  `restored` spans (search by span name), ERROR spans, connections whose span
+  count differs from the usual, and `close_reason` `idle` or `fd_reused`.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol
