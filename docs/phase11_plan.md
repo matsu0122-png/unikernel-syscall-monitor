@@ -90,6 +90,11 @@ Open from 11-3:
 - multi-vCPU (locking is in place, untested), a syscall blocking in another
   thread while the exit trap is armed (emulation makes it safe in principle);
 - pending entries are dropped when QEMU exits (vmi_trap.py emitted them);
+- the Python reader caps at about 9,000 records/s (100% CPU): under
+  sustained NETFD keep-alive load (51,900 syscalls/s) 81% of records were
+  lost at the ring; OTLP export itself dropped nothing (README "Sustained
+  load with OTLP"). Options: a faster reader (C/Go, or JSONL-only path),
+  spans to an OTel Collector, or sampling;
 - the selective "never while serving" claim now has a cheap fallback:
   tracing every request is practical again, so "what to watch" is a policy
   choice rather than a performance necessity.
