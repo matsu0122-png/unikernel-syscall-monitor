@@ -1,0 +1,173 @@
+base-c1-r0       boot 2.46 s  (tool pid None, qemu pid 3132229)
+base-c1-r0       c=1 rep 0:    8196.2 req/s  mean 0.122 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 200.0 us/req  failed 0
+base-c1-r0       c=1 rep 1:    3694.3 req/s  mean 0.271 ms p99 1 ms  rec/req 0.0  tool None us/req  qemu 400.0 us/req  failed 0
+base-c1-r0       c=1 rep 2:    3822.4 req/s  mean 0.262 ms p99 1 ms  rec/req 0.0  tool None us/req  qemu 350.0 us/req  failed 0
+base-c5-r0       boot 2.53 s  (tool pid None, qemu pid 3132357)
+base-c5-r0       c=5 rep 0:   17163.0 req/s  mean 0.291 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 100.0 us/req  failed 0
+base-c5-r0       c=5 rep 1:    4980.1 req/s  mean 1.004 ms p99 2 ms  rec/req 0.0  tool None us/req  qemu 300.0 us/req  failed 0
+base-c5-r0       c=5 rep 2:   14977.4 req/s  mean 0.334 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 100.0 us/req  failed 0
+rare-c1-r0       boot 2.75 s  (tool pid 3132518, qemu pid 3132524)
+rare-c1-r0       c=1 rep 0:    8133.7 req/s  mean 0.123 ms p99 0 ms  rec/req 0.0  tool 0.0 us/req  qemu 175.0 us/req  failed 0
+rare-c1-r0       c=1 rep 1:    6046.2 req/s  mean 0.165 ms p99 1 ms  rec/req 0.0  tool 50.0 us/req  qemu 250.0 us/req  failed 0
+rare-c1-r0       c=1 rep 2:    5513.4 req/s  mean 0.181 ms p99 1 ms  rec/req 0.0  tool 0.0 us/req  qemu 250.0 us/req  failed 0
+rare-c1-r0       stats {"stops": 10, "entries": 0, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 13.02, "integrity_checks": 3, "mean_check_ms": 0.116, "startup": "skip", "startup_stops": 9, "reader": {"records": 2, "syscalls": 0, "lost": 0}}
+rare-c5-r0       boot 2.79 s  (tool pid 3132657, qemu pid 3132663)
+rare-c5-r0       c=5 rep 0:   15490.7 req/s  mean 0.323 ms p99 1 ms  rec/req 0.0  tool 0.0 us/req  qemu 100.0 us/req  failed 0
+rare-c5-r0       c=5 rep 1:   15945.1 req/s  mean 0.314 ms p99 0 ms  rec/req 0.0  tool 0.0 us/req  qemu 100.0 us/req  failed 0
+rare-c5-r0       c=5 rep 2:    5265.4 req/s  mean 0.95 ms p99 2 ms  rec/req 0.0  tool 25.0 us/req  qemu 300.0 us/req  failed 0
+rare-c5-r0       stats {"stops": 10, "entries": 0, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 13.16, "integrity_checks": 3, "mean_check_ms": 0.071, "startup": "skip", "startup_stops": 9, "reader": {"records": 2, "syscalls": 0, "lost": 0}}
+net-c1-r0        boot 2.62 s  (tool pid 3132798, qemu pid 3132804)
+net-c1-r0        c=1 rep 0:    6856.8 req/s  mean 0.146 ms p99 0 ms  rec/req 2.0  tool 50.0 us/req  qemu 225.0 us/req  failed 0
+net-c1-r0        c=1 rep 1:    6058.9 req/s  mean 0.165 ms p99 0 ms  rec/req 2.0  tool 25.0 us/req  qemu 250.0 us/req  failed 0
+net-c1-r0        c=1 rep 2:    5596.2 req/s  mean 0.179 ms p99 0 ms  rec/req 2.0  tool 50.0 us/req  qemu 225.0 us/req  failed 0
+net-c1-r0        stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.27, "integrity_checks": 3, "mean_check_ms": 0.219, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net-c5-r0        boot 2.65 s  (tool pid 3132942, qemu pid 3132948)
+net-c5-r0        c=5 rep 0:   11996.2 req/s  mean 0.417 ms p99 0 ms  rec/req 2.0  tool 25.0 us/req  qemu 150.0 us/req  failed 0
+net-c5-r0        c=5 rep 1:    4558.9 req/s  mean 1.097 ms p99 4 ms  rec/req 2.0  tool 100.0 us/req  qemu 325.0 us/req  failed 0
+net-c5-r0        c=5 rep 2:   11465.6 req/s  mean 0.436 ms p99 0 ms  rec/req 2.0  tool 25.0 us/req  qemu 125.0 us/req  failed 0
+net-c5-r0        stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.7, "integrity_checks": 3, "mean_check_ms": 0.146, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net_otlp-c1-r0   boot 2.73 s  (tool pid 3133100, qemu pid 3133120)
+net_otlp-c1-r0   c=1 rep 0:    6480.1 req/s  mean 0.154 ms p99 0 ms  rec/req 2.0  tool 300.0 us/req  qemu 200.0 us/req  failed 0
+net_otlp-c1-r0   c=1 rep 1:    3047.7 req/s  mean 0.328 ms p99 1 ms  rec/req 2.0  tool 400.0 us/req  qemu 450.0 us/req  failed 0
+net_otlp-c1-r0   c=1 rep 2:    3007.6 req/s  mean 0.332 ms p99 1 ms  rec/req 2.0  tool 425.0 us/req  qemu 450.0 us/req  failed 0
+net_otlp-c1-r0   stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.44, "integrity_checks": 3, "mean_check_ms": 0.139, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net_otlp-c5-r0   boot 2.72 s  (tool pid 3133253, qemu pid 3133273)
+net_otlp-c5-r0   c=5 rep 0:   12021.4 req/s  mean 0.416 ms p99 0 ms  rec/req 2.0  tool 300.0 us/req  qemu 125.0 us/req  failed 0
+net_otlp-c5-r0   c=5 rep 1:   10869.6 req/s  mean 0.46 ms p99 1 ms  rec/req 2.0  tool 275.0 us/req  qemu 150.0 us/req  failed 0
+net_otlp-c5-r0   c=5 rep 2:    4954.1 req/s  mean 1.009 ms p99 3 ms  rec/req 2.0  tool 550.0 us/req  qemu 300.0 us/req  failed 0
+net_otlp-c5-r0   stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.48, "integrity_checks": 3, "mean_check_ms": 0.138, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+netfd_noret-c1-r0 boot 2.77 s  (tool pid 3133408, qemu pid 3133414)
+netfd_noret-c1-r0 c=1 rep 0:    6611.8 req/s  mean 0.151 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 200.0 us/req  failed 0
+netfd_noret-c1-r0 c=1 rep 1:    3584.6 req/s  mean 0.279 ms p99 1 ms  rec/req 5.0  tool 100.0 us/req  qemu 400.0 us/req  failed 0
+netfd_noret-c1-r0 c=1 rep 2:    5166.3 req/s  mean 0.194 ms p99 0 ms  rec/req 5.0  tool 50.0 us/req  qemu 275.0 us/req  failed 0
+netfd_noret-c1-r0 stats {"stops": 6054, "entries": 6007, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.92, "integrity_checks": 3, "mean_check_ms": 0.223, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd_noret-c5-r0 boot 2.76 s  (tool pid 3133567, qemu pid 3133573)
+netfd_noret-c5-r0 c=5 rep 0:   11576.8 req/s  mean 0.432 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 125.0 us/req  failed 0
+netfd_noret-c5-r0 c=5 rep 1:   11206.7 req/s  mean 0.446 ms p99 0 ms  rec/req 5.0  tool 50.0 us/req  qemu 150.0 us/req  failed 0
+netfd_noret-c5-r0 c=5 rep 2:    9835.5 req/s  mean 0.508 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 150.0 us/req  failed 0
+netfd_noret-c5-r0 stats {"stops": 6054, "entries": 6007, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.48, "integrity_checks": 3, "mean_check_ms": 0.132, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd-c1-r0      boot 2.67 s  (tool pid 3133708, qemu pid 3133714)
+netfd-c1-r0      c=1 rep 0:    5926.5 req/s  mean 0.169 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 225.0 us/req  failed 0
+netfd-c1-r0      c=1 rep 1:    4725.8 req/s  mean 0.212 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 300.0 us/req  failed 0
+netfd-c1-r0      c=1 rep 2:    5519.8 req/s  mean 0.181 ms p99 0 ms  rec/req 5.0  tool 50.0 us/req  qemu 250.0 us/req  failed 0
+netfd-c1-r0      stats {"stops": 12061, "entries": 6007, "exits": 6007, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.18, "integrity_checks": 3, "mean_check_ms": 0.137, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd-c5-r0      boot 2.69 s  (tool pid 3133848, qemu pid 3133854)
+netfd-c5-r0      c=5 rep 0:    9486.5 req/s  mean 0.527 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 150.0 us/req  failed 0
+netfd-c5-r0      c=5 rep 1:    4511.9 req/s  mean 1.108 ms p99 3 ms  rec/req 5.0  tool 100.0 us/req  qemu 350.0 us/req  failed 0
+netfd-c5-r0      c=5 rep 2:    4199.8 req/s  mean 1.191 ms p99 4 ms  rec/req 5.0  tool 100.0 us/req  qemu 375.0 us/req  failed 0
+netfd-c5-r0      stats {"stops": 12061, "entries": 6007, "exits": 6007, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.49, "integrity_checks": 3, "mean_check_ms": 0.143, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+file-c1-r0       boot 2.74 s  (tool pid 3133986, qemu pid 3133992)
+file-c1-r0       c=1 rep 0:    6400.3 req/s  mean 0.156 ms p99 0 ms  rec/req 3.0  tool 50.0 us/req  qemu 250.0 us/req  failed 0
+file-c1-r0       c=1 rep 1:    5810.3 req/s  mean 0.172 ms p99 1 ms  rec/req 3.0  tool 25.0 us/req  qemu 225.0 us/req  failed 0
+file-c1-r0       c=1 rep 2:    4541.8 req/s  mean 0.22 ms p99 1 ms  rec/req 3.0  tool 75.0 us/req  qemu 325.0 us/req  failed 0
+file-c1-r0       stats {"stops": 7365, "entries": 3605, "exits": 3605, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 2.46, "integrity_checks": 3, "mean_check_ms": 0.254, "startup": "skip", "startup_stops": 154, "reader": {"records": 3607, "syscalls": 3605, "lost": 0}}
+file-c5-r0       boot 2.72 s  (tool pid 3134144, qemu pid 3134150)
+file-c5-r0       c=5 rep 0:   12120.5 req/s  mean 0.413 ms p99 0 ms  rec/req 3.0  tool 50.0 us/req  qemu 125.0 us/req  failed 0
+file-c5-r0       c=5 rep 1:    4936.8 req/s  mean 1.013 ms p99 3 ms  rec/req 3.0  tool 100.0 us/req  qemu 350.0 us/req  failed 0
+file-c5-r0       c=5 rep 2:    4617.5 req/s  mean 1.083 ms p99 3 ms  rec/req 3.0  tool 75.0 us/req  qemu 350.0 us/req  failed 0
+file-c5-r0       stats {"stops": 7365, "entries": 3605, "exits": 3605, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 3.82, "integrity_checks": 3, "mean_check_ms": 0.248, "startup": "skip", "startup_stops": 154, "reader": {"records": 3607, "syscalls": 3605, "lost": 0}}
+all-c1-r0        boot 2.76 s  (tool pid 3134302, qemu pid 3134308)
+all-c1-r0        c=1 rep 0:    4082.2 req/s  mean 0.245 ms p99 0 ms  rec/req 12.0  tool 125.0 us/req  qemu 300.0 us/req  failed 0
+all-c1-r0        c=1 rep 1:    3914.4 req/s  mean 0.255 ms p99 0 ms  rec/req 12.0  tool 125.0 us/req  qemu 325.0 us/req  failed 0
+all-c1-r0        c=1 rep 2:    3909.6 req/s  mean 0.256 ms p99 0 ms  rec/req 12.0  tool 175.0 us/req  qemu 350.0 us/req  failed 0
+all-c1-r0        stats {"stops": 29121, "entries": 14417, "exits": 14416, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 1.97, "integrity_checks": 3, "mean_check_ms": 0.226, "startup": "skip", "startup_stops": 288, "reader": {"records": 14417, "syscalls": 14416, "lost": 0}}
+all-c5-r0        boot 2.73 s  (tool pid 3134446, qemu pid 3134452)
+all-c5-r0        c=5 rep 0:    6183.7 req/s  mean 0.809 ms p99 1 ms  rec/req 10.51  tool 125.0 us/req  qemu 225.0 us/req  failed 0
+all-c5-r0        c=5 rep 1:    3631.7 req/s  mean 1.377 ms p99 5 ms  rec/req 9.59  tool 175.0 us/req  qemu 400.0 us/req  failed 0
+all-c5-r0        c=5 rep 2:    4925.3 req/s  mean 1.015 ms p99 1 ms  rec/req 11.81  tool 125.0 us/req  qemu 250.0 us/req  failed 0
+all-c5-r0        stats {"stops": 25851, "entries": 12782, "exits": 12781, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.46, "integrity_checks": 3, "mean_check_ms": 0.236, "startup": "skip", "startup_stops": 288, "reader": {"records": 12782, "syscalls": 12781, "lost": 0}}
+phase8-c1-r0     boot 2.56 s  (tool pid None, qemu pid 3134577)
+phase8-c1-r0     c=1 rep 0:     730.2 req/s  mean 1.369 ms p99 2 ms  rec/req 12.0  tool None us/req  qemu 1425.0 us/req  failed 0
+phase8-c1-r0     c=1 rep 1:     668.6 req/s  mean 1.496 ms p99 8 ms  rec/req 12.0  tool None us/req  qemu 1600.0 us/req  failed 0
+phase8-c1-r0     c=1 rep 2:     714.1 req/s  mean 1.4 ms p99 2 ms  rec/req 12.0  tool None us/req  qemu 1450.0 us/req  failed 0
+phase8-c5-r0     boot 2.44 s  (tool pid None, qemu pid 3134723)
+phase8-c5-r0     c=5 rep 0:     878.0 req/s  mean 5.695 ms p99 5 ms  rec/req 10.12  tool None us/req  qemu 1200.0 us/req  failed 0
+phase8-c5-r0     c=5 rep 1:     947.5 req/s  mean 5.277 ms p99 7 ms  rec/req 9.25  tool None us/req  qemu 1125.0 us/req  failed 0
+phase8-c5-r0     c=5 rep 2:     886.7 req/s  mean 5.639 ms p99 5 ms  rec/req 9.91  tool None us/req  qemu 1175.0 us/req  failed 0
+phase8-c1-r1     boot 2.58 s  (tool pid None, qemu pid 3134864)
+phase8-c1-r1     c=1 rep 0:     731.4 req/s  mean 1.367 ms p99 2 ms  rec/req 12.0  tool None us/req  qemu 1450.0 us/req  failed 0
+phase8-c1-r1     c=1 rep 1:     727.6 req/s  mean 1.374 ms p99 2 ms  rec/req 12.0  tool None us/req  qemu 1425.0 us/req  failed 0
+phase8-c1-r1     c=1 rep 2:     728.5 req/s  mean 1.373 ms p99 2 ms  rec/req 12.0  tool None us/req  qemu 1450.0 us/req  failed 0
+phase8-c5-r1     boot 2.59 s  (tool pid None, qemu pid 3135003)
+phase8-c5-r1     c=5 rep 0:     887.8 req/s  mean 5.632 ms p99 5 ms  rec/req 10.13  tool None us/req  qemu 1175.0 us/req  failed 0
+phase8-c5-r1     c=5 rep 1:     812.7 req/s  mean 6.153 ms p99 4 ms  rec/req 11.05  tool None us/req  qemu 1300.0 us/req  failed 0
+phase8-c5-r1     c=5 rep 2:     885.1 req/s  mean 5.649 ms p99 6 ms  rec/req 9.87  tool None us/req  qemu 1175.0 us/req  failed 0
+all-c1-r1        boot 2.61 s  (tool pid 3135152, qemu pid 3135158)
+all-c1-r1        c=1 rep 0:    3958.5 req/s  mean 0.253 ms p99 0 ms  rec/req 12.0  tool 150.0 us/req  qemu 300.0 us/req  failed 0
+all-c1-r1        c=1 rep 1:    3800.5 req/s  mean 0.263 ms p99 0 ms  rec/req 12.0  tool 150.0 us/req  qemu 350.0 us/req  failed 0
+all-c1-r1        c=1 rep 2:    3647.8 req/s  mean 0.274 ms p99 0 ms  rec/req 12.0  tool 150.0 us/req  qemu 350.0 us/req  failed 0
+all-c1-r1        stats {"stops": 29121, "entries": 14417, "exits": 14416, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.06, "integrity_checks": 3, "mean_check_ms": 0.402, "startup": "skip", "startup_stops": 288, "reader": {"records": 14417, "syscalls": 14416, "lost": 0}}
+all-c5-r1        boot 2.59 s  (tool pid 3135303, qemu pid 3135309)
+all-c5-r1        c=5 rep 0:    6622.2 req/s  mean 0.755 ms p99 1 ms  rec/req 9.62  tool 100.0 us/req  qemu 200.0 us/req  failed 0
+all-c5-r1        c=5 rep 1:    5856.9 req/s  mean 0.854 ms p99 1 ms  rec/req 10.48  tool 175.0 us/req  qemu 250.0 us/req  failed 0
+all-c5-r1        c=5 rep 2:    5385.3 req/s  mean 0.928 ms p99 1 ms  rec/req 10.49  tool 150.0 us/req  qemu 250.0 us/req  failed 0
+all-c5-r1        stats {"stops": 24789, "entries": 12251, "exits": 12250, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.03, "integrity_checks": 3, "mean_check_ms": 0.386, "startup": "skip", "startup_stops": 288, "reader": {"records": 12251, "syscalls": 12250, "lost": 0}}
+file-c1-r1       boot 2.79 s  (tool pid 3135460, qemu pid 3135466)
+file-c1-r1       c=1 rep 0:    6255.9 req/s  mean 0.16 ms p99 0 ms  rec/req 3.0  tool 50.0 us/req  qemu 250.0 us/req  failed 0
+file-c1-r1       c=1 rep 1:    6620.8 req/s  mean 0.151 ms p99 0 ms  rec/req 3.0  tool 50.0 us/req  qemu 200.0 us/req  failed 0
+file-c1-r1       c=1 rep 2:    5978.8 req/s  mean 0.167 ms p99 0 ms  rec/req 3.0  tool 75.0 us/req  qemu 250.0 us/req  failed 0
+file-c1-r1       stats {"stops": 7365, "entries": 3605, "exits": 3605, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 2.22, "integrity_checks": 3, "mean_check_ms": 0.261, "startup": "skip", "startup_stops": 154, "reader": {"records": 3607, "syscalls": 3605, "lost": 0}}
+file-c5-r1       boot 2.76 s  (tool pid 3135601, qemu pid 3135607)
+file-c5-r1       c=5 rep 0:   11669.3 req/s  mean 0.428 ms p99 0 ms  rec/req 3.0  tool 50.0 us/req  qemu 125.0 us/req  failed 0
+file-c5-r1       c=5 rep 1:    4918.6 req/s  mean 1.017 ms p99 2 ms  rec/req 3.0  tool 75.0 us/req  qemu 325.0 us/req  failed 0
+file-c5-r1       c=5 rep 2:    4979.0 req/s  mean 1.004 ms p99 3 ms  rec/req 3.0  tool 75.0 us/req  qemu 325.0 us/req  failed 0
+file-c5-r1       stats {"stops": 7365, "entries": 3605, "exits": 3605, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 3.76, "integrity_checks": 3, "mean_check_ms": 0.165, "startup": "skip", "startup_stops": 154, "reader": {"records": 3607, "syscalls": 3605, "lost": 0}}
+netfd-c1-r1      boot 2.73 s  (tool pid 3135742, qemu pid 3135748)
+netfd-c1-r1      c=1 rep 0:    5904.8 req/s  mean 0.169 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 225.0 us/req  failed 0
+netfd-c1-r1      c=1 rep 1:    3395.5 req/s  mean 0.295 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 425.0 us/req  failed 0
+netfd-c1-r1      c=1 rep 2:    3356.3 req/s  mean 0.298 ms p99 1 ms  rec/req 5.0  tool 125.0 us/req  qemu 400.0 us/req  failed 0
+netfd-c1-r1      stats {"stops": 12061, "entries": 6007, "exits": 6007, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.87, "integrity_checks": 3, "mean_check_ms": 0.138, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd-c5-r1      boot 2.77 s  (tool pid 3135900, qemu pid 3135906)
+netfd-c5-r1      c=5 rep 0:    9382.4 req/s  mean 0.533 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 175.0 us/req  failed 0
+netfd-c5-r1      c=5 rep 1:    8959.8 req/s  mean 0.558 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 150.0 us/req  failed 0
+netfd-c5-r1      c=5 rep 2:    7678.9 req/s  mean 0.651 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 200.0 us/req  failed 0
+netfd-c5-r1      stats {"stops": 12061, "entries": 6007, "exits": 6007, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.21, "integrity_checks": 3, "mean_check_ms": 0.139, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd_noret-c1-r1 boot 2.72 s  (tool pid 3136038, qemu pid 3136044)
+netfd_noret-c1-r1 c=1 rep 0:    6477.6 req/s  mean 0.154 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 225.0 us/req  failed 0
+netfd_noret-c1-r1 c=1 rep 1:    3656.9 req/s  mean 0.273 ms p99 1 ms  rec/req 5.0  tool 75.0 us/req  qemu 375.0 us/req  failed 0
+netfd_noret-c1-r1 c=1 rep 2:    5534.1 req/s  mean 0.181 ms p99 0 ms  rec/req 5.0  tool 75.0 us/req  qemu 250.0 us/req  failed 0
+netfd_noret-c1-r1 stats {"stops": 6054, "entries": 6007, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.81, "integrity_checks": 3, "mean_check_ms": 0.221, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+netfd_noret-c5-r1 boot 2.63 s  (tool pid 3136187, qemu pid 3136212)
+netfd_noret-c5-r1 c=5 rep 0:   11468.5 req/s  mean 0.436 ms p99 1 ms  rec/req 5.0  tool 50.0 us/req  qemu 150.0 us/req  failed 0
+netfd_noret-c5-r1 c=5 rep 1:    4989.5 req/s  mean 1.002 ms p99 3 ms  rec/req 5.0  tool 125.0 us/req  qemu 300.0 us/req  failed 0
+netfd_noret-c5-r1 c=5 rep 2:    9300.0 req/s  mean 0.538 ms p99 1 ms  rec/req 5.0  tool 50.0 us/req  qemu 175.0 us/req  failed 0
+netfd_noret-c5-r1 stats {"stops": 6054, "entries": 6007, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.43, "integrity_checks": 3, "mean_check_ms": 0.137, "startup": "skip", "startup_stops": 47, "reader": {"records": 6008, "syscalls": 6007, "lost": 0}}
+net_otlp-c1-r1   boot 2.71 s  (tool pid 3136347, qemu pid 3136367)
+net_otlp-c1-r1   c=1 rep 0:    6488.9 req/s  mean 0.154 ms p99 0 ms  rec/req 2.0  tool 400.0 us/req  qemu 225.0 us/req  failed 0
+net_otlp-c1-r1   c=1 rep 1:    5286.8 req/s  mean 0.189 ms p99 0 ms  rec/req 2.0  tool 300.0 us/req  qemu 275.0 us/req  failed 0
+net_otlp-c1-r1   c=1 rep 2:    4124.9 req/s  mean 0.242 ms p99 1 ms  rec/req 2.0  tool 375.0 us/req  qemu 300.0 us/req  failed 0
+net_otlp-c1-r1   stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.61, "integrity_checks": 3, "mean_check_ms": 0.062, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net_otlp-c5-r1   boot 2.79 s  (tool pid 3136508, qemu pid 3136528)
+net_otlp-c5-r1   c=5 rep 0:   12304.7 req/s  mean 0.406 ms p99 0 ms  rec/req 2.0  tool 300.0 us/req  qemu 100.0 us/req  failed 0
+net_otlp-c5-r1   c=5 rep 1:    7381.7 req/s  mean 0.677 ms p99 2 ms  rec/req 2.0  tool 325.0 us/req  qemu 225.0 us/req  failed 0
+net_otlp-c5-r1   c=5 rep 2:    5276.6 req/s  mean 0.948 ms p99 3 ms  rec/req 2.0  tool 425.0 us/req  qemu 300.0 us/req  failed 0
+net_otlp-c5-r1   stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.76, "integrity_checks": 3, "mean_check_ms": 0.138, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net-c1-r1        boot 2.80 s  (tool pid 3136683, qemu pid 3136689)
+net-c1-r1        c=1 rep 0:    6031.7 req/s  mean 0.166 ms p99 0 ms  rec/req 2.0  tool 50.0 us/req  qemu 250.0 us/req  failed 0
+net-c1-r1        c=1 rep 1:    3449.4 req/s  mean 0.29 ms p99 1 ms  rec/req 2.0  tool 75.0 us/req  qemu 400.0 us/req  failed 0
+net-c1-r1        c=1 rep 2:    2923.2 req/s  mean 0.342 ms p99 1 ms  rec/req 2.0  tool 50.0 us/req  qemu 450.0 us/req  failed 0
+net-c1-r1        stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 3.39, "integrity_checks": 3, "mean_check_ms": 0.14, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+net-c5-r1        boot 2.63 s  (tool pid 3136831, qemu pid 3136837)
+net-c5-r1        c=5 rep 0:   12064.9 req/s  mean 0.414 ms p99 0 ms  rec/req 2.0  tool 25.0 us/req  qemu 125.0 us/req  failed 0
+net-c5-r1        c=5 rep 1:   12564.8 req/s  mean 0.398 ms p99 0 ms  rec/req 2.0  tool 50.0 us/req  qemu 150.0 us/req  failed 0
+net-c5-r1        c=5 rep 2:   10494.0 req/s  mean 0.476 ms p99 1 ms  rec/req 2.0  tool 50.0 us/req  qemu 125.0 us/req  failed 0
+net-c5-r1        stats {"stops": 4822, "entries": 2404, "exits": 2404, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {}, "mean_stop_handling_us": 2.41, "integrity_checks": 3, "mean_check_ms": 0.222, "startup": "skip", "startup_stops": 14, "reader": {"records": 2405, "syscalls": 2404, "lost": 0}}
+rare-c1-r1       boot 2.66 s  (tool pid 3136987, qemu pid 3136993)
+rare-c1-r1       c=1 rep 0:    8149.8 req/s  mean 0.123 ms p99 0 ms  rec/req 0.0  tool 25.0 us/req  qemu 175.0 us/req  failed 0
+rare-c1-r1       c=1 rep 1:    7281.5 req/s  mean 0.137 ms p99 0 ms  rec/req 0.0  tool 0.0 us/req  qemu 225.0 us/req  failed 0
+rare-c1-r1       c=1 rep 2:    6723.6 req/s  mean 0.149 ms p99 0 ms  rec/req 0.0  tool 25.0 us/req  qemu 200.0 us/req  failed 0
+rare-c1-r1       stats {"stops": 10, "entries": 0, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 13.54, "integrity_checks": 3, "mean_check_ms": 0.115, "startup": "skip", "startup_stops": 9, "reader": {"records": 2, "syscalls": 0, "lost": 0}}
+rare-c5-r1       boot 2.71 s  (tool pid 3137134, qemu pid 3137140)
+rare-c5-r1       c=5 rep 0:   17221.3 req/s  mean 0.29 ms p99 0 ms  rec/req 0.0  tool 25.0 us/req  qemu 75.0 us/req  failed 0
+rare-c5-r1       c=5 rep 1:   15609.1 req/s  mean 0.32 ms p99 0 ms  rec/req 0.0  tool 0.0 us/req  qemu 125.0 us/req  failed 0
+rare-c5-r1       c=5 rep 2:   11711.7 req/s  mean 0.427 ms p99 1 ms  rec/req 0.0  tool 25.0 us/req  qemu 125.0 us/req  failed 0
+rare-c5-r1       stats {"stops": 10, "entries": 0, "exits": 0, "unmatched_exits": 0, "nr_mismatch": 0, "foreign_traps": 0, "alerts": {"boundary_retired": 1}, "mean_stop_handling_us": 13.81, "integrity_checks": 3, "mean_check_ms": 0.029, "startup": "skip", "startup_stops": 9, "reader": {"records": 2, "syscalls": 0, "lost": 0}}
+base-c1-r1       boot 2.68 s  (tool pid None, qemu pid 3137269)
+base-c1-r1       c=1 rep 0:    7989.4 req/s  mean 0.125 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 200.0 us/req  failed 0
+base-c1-r1       c=1 rep 1:    3951.9 req/s  mean 0.253 ms p99 1 ms  rec/req 0.0  tool None us/req  qemu 350.0 us/req  failed 0
+base-c1-r1       c=1 rep 2:    6732.2 req/s  mean 0.149 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 250.0 us/req  failed 0
+base-c5-r1       boot 2.53 s  (tool pid None, qemu pid 3137402)
+base-c5-r1       c=5 rep 0:    6588.9 req/s  mean 0.759 ms p99 2 ms  rec/req 0.0  tool None us/req  qemu 225.0 us/req  failed 0
+base-c5-r1       c=5 rep 1:   17232.5 req/s  mean 0.29 ms p99 0 ms  rec/req 0.0  tool None us/req  qemu 75.0 us/req  failed 0
+base-c5-r1       c=5 rep 2:    7546.3 req/s  mean 0.663 ms p99 2 ms  rec/req 0.0  tool None us/req  qemu 225.0 us/req  failed 0
+-> logs/bench_p11_3_kvmtrap.csv

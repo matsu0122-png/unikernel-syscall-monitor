@@ -13,3 +13,4 @@ agentless/experiments/*.bin
 agentless/build/
 logs/p11_stop_cost_raw/
 agentless/profile/rsp_probe
+agentless/kvmtrap/libvmitrap.so

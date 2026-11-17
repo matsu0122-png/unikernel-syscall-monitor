@@ -27,6 +27,7 @@ Design and rationale: see `/home/matsu/.claude/plans/moonlit-kindling-dragon.md`
 - **Phase 10-7 (collector speed-up, time offset, tool use): done.** See below. With a bulk reader and a separate output thread, NETFD and ALL lost 0 records in 10/10 trials each at 1,350 requests, ab -c 5, 4,096-record ring (10-5: 11.3% and 52.0%). All spans reached Jaeger. ALL peaked at up to 4,029 of 4,096 unread records, so the default ring is now 16,384 and the default group NETFD. Sustained high load still loses records: OTLP export tops out at about 10,000 spans/s (simulated guest). The time offset fits a line against `CLOCK_MONOTONIC_RAW`: 0 resets in two one-hour runs, and after the first 5 minutes at most 1.0 ms from a hindsight line (windows: 5.0 ms). **vmitrace also explained the load limit open since Phase 3:** lwIP keeps one 4 KiB `tcp_pcb` per closed connection in TIME_WAIT for 120 s. A reused client port then stalls (about 3,100 connections), and the memory runs out (about 4,200-5,300 connections, 64 MiB). It is not a leak.
 - **Phase 11 (agentless selective trapping): prototype.** See below. No guest code, distro QEMU: software breakpoints from `agentless/gen_traps.py` on the selected syscalls' tail jumps in the dispatcher, handled by `agentless/vmi_trap.py` over the gdbstub (own RSP client, resumes at the jump target without single-stepping), JSONL + OTel/Jaeger. Throughput: NET 5.2%, NETFD 2.1%, ALL 1.1% of base; an unused selection costs nothing measurable; about 300 us per stop. Checked first: the guest cannot remove hardware breakpoints by writing DR0-7, but sees and can remove 0xCC; a guest removal of a trap was detected in 0.27 s and re-armed.
 - **Phase 11-2 (traps baked in at build time).** See below. `agentless/bake_traps.py` writes the selected 0xCCs into a copy of the image; `agentless/qemu-trap.sh` (kraft's `--qemu`) has `vmi_trap.py` register them while QEMU is paused at `-S`. Fail-closed without the host; nginx's startup syscalls are now recorded; NET throughput is unchanged (about 764 req/s).
+- **Phase 11-3 (trap handling inside an unmodified QEMU via LD_PRELOAD): prototype.** See below. `agentless/kvmtrap/libvmitrap.so` is preloaded into the distro QEMU by `agentless/qemu-kvmtrap.sh` and handles the baked traps at the KVM ioctl boundary (KVM_RUN loop, no gdbstub, no VM stop, no single-step); `kvmtrap.py` reads its shared-memory ring and writes the same JSONL/OTel. ALL: 3,885 req/s against 717 for Phase 8's patched QEMU and 133 for the gdbstub path, same session; records identical to Phase 8.
 
 ## Phase 1 result
 
@@ -2663,6 +2664,102 @@ What could still be cut, by size:
   stop**. Going lower needs a different path into KVM than QEMU's gdbstub
   (a modified QEMU or a host kernel module), which this project excludes.
   This is the reason the method has to rely on rare stops.
+
+## Phase 11-3 result: trap handling inside an unmodified QEMU (2026-11-18)
+
+Question: the gdbstub path costs about 300 us per stop (QEMU's
+`vm_stop`/`vm_start` alone is about 150 us), so any trap that fires while
+serving makes it slower than Phase 8's patched QEMU (about 104 us per
+syscall). Can Phase 6-8's in-QEMU handling be kept without modifying QEMU?
+
+A KVM exit is returned only to the thread that called `KVM_RUN` (QEMU's
+vCPU thread); no KVM API hands it to another process. So the handler goes
+into QEMU's process instead of into its source: the distro binary imports
+`ioctl` from glibc (`U ioctl@GLIBC_2.2.5`), and `LD_PRELOAD` interposes it.
+
+- `agentless/kvmtrap/libvmitrap.c` (`make -C agentless/kvmtrap`): acts only
+  on KVM ioctls. `KVM_RUN` is re-issued in a loop inside the library; a
+  `KVM_EXIT_DEBUG` for `#BP` at a baked site is handled there and never
+  reaches QEMU. Entry site: nr/arguments from the saved registers (r12,
+  `KVM_TRANSLATE`), `rip` = jump target (`KVM_SET_REGS`), the 0xCC stays.
+  Exit site: 0xCC only while a selected syscall is in flight, and its one
+  instruction (`mov %rax,0x58(%r12)`) is emulated, so there is **no
+  single-step anywhere** (Phase 8 had 4 exits per syscall, this has 2, or 1
+  with `--no-ret`). `KVM_SET_GUEST_DEBUG` (USE_SW_BP) is set before each
+  vCPU's first `KVM_RUN` and OR-ed into QEMU's own calls; memory slots are
+  taken from `KVM_SET_USER_MEMORY_REGION`. A `#BP` that is not ours goes
+  back to QEMU, which re-injects it. The code check (dispatcher, jump table,
+  caller vs. the image) runs at the first trap (the image is not in RAM at
+  the first `KVM_RUN`: the option ROM loads it) and is fatal on a mismatch;
+  then a thread repeats it every second and writes a removed 0xCC back.
+- `agentless/kvmtrap/kvmtrap.py`: writes the conf and reference bytes from
+  the baked manifest, creates a ring in `/dev/shm`, and turns the ring into
+  the same JSONL (`src: "kvmtrap"`) and OTel spans as `vmi_trap.py`. The
+  library never waits for it: a slow reader loses records (counted), it
+  never stalls the vCPU.
+- `agentless/qemu-kvmtrap.sh`: kraft's `--qemu`, same environment variables
+  as `qemu-trap.sh`. Startup is still not recorded (boundary `accept4`).
+- `agentless/bench_baked.py --wrapper kvmtrap|gdbstub`, and condition
+  `phase8` (the patched QEMU from Phase 8, base image, entry + return).
+
+Scope note: the QEMU binary is unmodified, but its process runs our code.
+A compromised guest still cannot reach it (it is host code), and the
+guest-side fail-closed property is unchanged (a baked image without the
+library crashes at its first selected syscall).
+
+**Checks** (NET image, curl): records start at the first `accept4` after
+14 startup stops (as in 11-2); accept4/recvfrom/setsockopt with return
+values. A 0xCC overwritten with the original byte (through the gdbstub,
+attached and detached while the library ran) gave `trap_removed` then
+`trap_rearmed` within a second, and the next `recvfrom` was recorded.
+
+**Records vs. Phase 8** (same session, ALL, ab -n 400 -c 1 x3): the 14,416
+kvmtrap records have the same syscall sequence as Phase 8's records after
+its first `accept4`; return value and first argument agree in all 9,612
+comparable records (time calls excluded). Phase 8 has one more: the
+`epoll_wait` still blocked at shutdown (the library drops a pending entry
+when QEMU exits).
+
+### Performance (2026-11-18)
+
+`bench_baked.py` procedure as in 11-2 (fresh instance per condition,
+concurrency and round; `ab -n 400` x3; 2 rounds; governor `powersave`;
+other containers running), run twice in one session: `--wrapper kvmtrap`
+(with `phase8`), then `--wrapper gdbstub`. Mean ± stdev of 6 runs
+(`logs/bench_p11_3_{kvmtrap,gdbstub}.csv/.log`):
+
+| selection | stops/req | kvmtrap c=1 | kvmtrap c=5 | gdbstub c=1 | gdbstub c=5 | QEMU CPU us/req c=1 (kvmtrap / gdbstub) |
+|---|---:|---|---|---|---|---|
+| base (no traps) | 0 | 5,731 ± 2,151 | 11,415 ± 5,643 | 5,643 ± 2,473 | 14,111 ± 4,217 | 292 / 308 |
+| rare `socket,connect` | 0 | 6,975 ± 1,084 | 13,541 ± 4,455 | 6,100 ± 1,532 | 11,981 ± 4,983 | 212 / 275 |
+| NET | 4 | **5,153 ± 1,585** | **10,524 ± 3,006** | 702 ± 41 | 762 ± 14 | 300 / 1,371 |
+| NET + OTLP | 4 | 4,739 ± 1,589 | 8,801 ± 3,351 | 580 ± 91 | 629 ± 68 | 317 / 1,508 |
+| NETFD, entry only | 5 | 5,172 ± 1,321 | 9,729 ± 2,501 | 576 ± 12 | 589 ± 44 | 288 / 1,608 |
+| NETFD | 10 | 4,805 ± 1,189 | 7,370 ± 2,424 | 297 ± 27 | 317 ± 11 | 304 / 3,050 |
+| FILE | 6 | 5,935 ± 741 | 7,207 ± 3,636 | 491 ± 21 | 494 ± 32 | 250 / 1,854 |
+| ALL | 24 | **3,885 ± 148** | **5,434 ± 1,064** | 133 ± 3 | 166 ± 5 | 329 / 6,744 |
+| Phase 8 patched QEMU (every syscall) | 48 exits | 717 ± 24 | 883 ± 43 | - | - | 1,467 |
+
+- **Every syscall traced (ALL) runs at 3,885 req/s: 5.4x Phase 8's patched
+  QEMU (717) and 29x the gdbstub path (133).** NET, NETFD and FILE are
+  within base's spread at c=1. ALL at c=5 is about half of base.
+- Per stop: the library's own handling is 2-3 us (`mean_stop_handling_us`,
+  vs. 165-220 us in `vmi_trap.py`); QEMU's CPU (vCPU thread, KVM included)
+  grows by about 37 us per request for 24 stops in ALL, i.e. about 1.5 us
+  per stop. Recorded `dur_us` of a syscall is 6-8 us (gdbstub: about 600).
+- Boot (kraft run -> first HTTP 200) is 2.6-2.8 s, near base (2.5 s); the
+  gdbstub path paused 3.7-3.8 s for registration.
+- Reader CPU: 50-150 us/request without OTLP, 367 with OTLP. 0 records lost
+  in all 54 kvmtrap instances; `nr_mismatch`, foreign traps and unmatched
+  exits 0. `rare`'s mean handling (13 us) includes the one-off code check at
+  the first trap.
+- Stalls: the gdbstub ALL c=1 instances gave up in their third `ab` run in
+  both rounds (n=4 there); none with kvmtrap.
+- Base's spread is still 30-40%; compare req/s, not % of base.
+
+Not done yet: a guest that removes a trap itself (11's
+`--test-guest-untrap` needs the gdbstub), multi-vCPU, a syscall blocking
+in another thread while the exit trap is armed, long runs.
 
 ## Notes for later phases
 

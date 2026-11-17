@@ -18,6 +18,11 @@ baked image from agentless/build/<dir>/. Measured:
     qemu_cpu   QEMU user+sys CPU during the run, us per request
   per instance (vmi_trap.py --stats): stops, mean stop handling, checks
 
+--wrapper kvmtrap (Phase 11-3) runs the same conditions with
+agentless/qemu-kvmtrap.sh: the traps are handled inside QEMU by
+agentless/kvmtrap/libvmitrap.so (LD_PRELOAD), and the "tool" is the ring
+reader agentless/kvmtrap/kvmtrap.py (trap handling CPU is in qemu_cpu).
+
 Rounds alternate the condition order to spread drift. Fresh instances keep
 each instance below the TIME_WAIT limit (Phase 10-7: about 3,100
 connections in 120 s; one stall seen at ~2,000): reps * N is capped at 1,500. A run
@@ -41,6 +46,8 @@ ROOT = HERE.parent
 APP = ROOT.parent
 BASE_IMAGE = APP / ".unikraft" / "build" / "nginx_qemu-x86_64"
 HZ = os.sysconf("SC_CLK_TCK")
+WRAPPERS = {"gdbstub": ("qemu-trap.sh", "vmi_trap.py"),
+            "kvmtrap": ("qemu-kvmtrap.sh", "kvmtrap.py")}
 
 # condition -> (image dir under agentless/build or None for base, extra env)
 CONDITIONS = {
@@ -52,7 +59,11 @@ CONDITIONS = {
     "netfd": ("netfd", {}),
     "file": ("file", {}),
     "all": ("all", {}),
+    # Phase 8 reference: the patched QEMU, every syscall (entry + return),
+    # base image; same instance procedure (needs the legacy build below)
+    "phase8": (None, {}),
 }
+PHASE8_QEMU = Path("/home/matsu/qemu-vmi-syscall-monitor/qemu-6.2-vmi/build/qemu-system-x86_64")
 
 
 def sh(*cmd, **kw):
@@ -128,10 +139,19 @@ def run_condition(cond, c, rnd, a, raw, workdir):
     env.update(extra_env)
     env["VMI_TRAP_ARGS"] = (env.get("VMI_TRAP_ARGS", "") + f" --stats {stats}").strip()
 
+    qemu_script = HERE / WRAPPERS[a.wrapper][0]
+    if cond == "phase8":
+        sys.path.insert(0, str(ROOT / "legacy"))
+        from run_capture_inline import resolve_syscall_addr, resolve_syscall_ret_addr
+        addr = resolve_syscall_addr()
+        env.update(VMI_MONITOR_ADDR=hex(addr), VMI_MONITOR_RET_ADDR=hex(resolve_syscall_ret_addr(addr)),
+                   VMI_MONITOR_LOG=str(jsonl))
+        qemu_script = PHASE8_QEMU
     name = f"p11b{cond.replace('_', '')}{int(time.time()) % 100000}"
     url = f"http://127.0.0.1:{a.host_port}/"
     t0 = time.time()
-    r = sh("kraft", "run", "-d", "--qemu", str(HERE / "qemu-trap.sh"),
+    tool_name = WRAPPERS[a.wrapper][1]
+    r = sh("kraft", "run", "-d", "--qemu", str(qemu_script),
            "-p", f"{a.host_port}:80", "--name", name, str(image), "/usr/bin/nginx",
            cwd=workdir, env=env)
     if r.returncode:
@@ -142,10 +162,10 @@ def run_condition(cond, c, rnd, a, raw, workdir):
         sh("kraft", "rm", "--force", name)
         sys.exit(f"{tag}: no HTTP 200 within 60 s")
 
-    tool = None if img_dir is None else pgrep1(f"vmi_trap.py .*--stats {stats}")
+    tool = None if img_dir is None else pgrep1(f"{tool_name} .*--stats {stats}")
     qemu = kraft_pid(name)
     if img_dir is not None and tool is None:
-        sys.exit(f"{tag}: vmi_trap.py not found")
+        sys.exit(f"{tag}: {tool_name} not found")
     print(f"{tag:16s} boot {boot_s:.2f} s  (tool pid {tool}, qemu pid {qemu})", flush=True)
 
     rows = []
@@ -184,7 +204,7 @@ def run_condition(cond, c, rnd, a, raw, workdir):
     sh("kraft", "rm", name)
     keep = ("stops", "entries", "exits", "unmatched_exits", "nr_mismatch", "foreign_traps",
             "alerts", "mean_stop_handling_us", "integrity_checks", "mean_check_ms",
-            "startup", "startup_stops")
+            "startup", "startup_stops", "reader")
     s = json.dumps({k: st.get(k) for k in keep}) if st else ""
     if s:
         print(f"{tag:16s} stats {s}", flush=True)
@@ -202,6 +222,9 @@ def main():
     ap.add_argument("--conc", default="1,5", help="ab -c values")
     ap.add_argument("--conditions", default=",".join(CONDITIONS))
     ap.add_argument("--host-port", type=int, default=8093)
+    ap.add_argument("--wrapper", choices=list(WRAPPERS), default="gdbstub",
+                    help="gdbstub: qemu-trap.sh + vmi_trap.py (Phase 11-2); "
+                         "kvmtrap: qemu-kvmtrap.sh + libvmitrap.so (Phase 11-3)")
     ap.add_argument("--out", default=str(ROOT / "logs" / "bench_p11_baked.csv"))
     ap.add_argument("--raw", default=str(ROOT / "logs" / "bench_p11_raw" / "baked"),
                     help="per-instance JSONL and stats")

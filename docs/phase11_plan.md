@@ -69,6 +69,31 @@ Result: the rare image (`socket,connect`) gives 0 records in normal
 operation. Performance rerun: serving and boot unchanged, startup stops
 constant per selection (README "Performance with startup not recorded").
 
+## Done (2026-11-18): Phase 11-3, trap handling inside an unmodified QEMU
+
+User's question: the gdbstub path is slower than Phase 8 (patched QEMU) for
+any trap that fires while serving; could Phase 8's in-QEMU handling live in
+a separate program attached to the unmodified QEMU? A KVM exit only returns
+to QEMU's vCPU thread, so the program has to run in QEMU's process. User
+accepted `LD_PRELOAD` (distro binary unchanged, library interposes libc's
+`ioctl`) as within "unmodified QEMU".
+
+`agentless/kvmtrap/` (`libvmitrap.c`, `kvmtrap.py`), `agentless/qemu-kvmtrap.sh`,
+`bench_baked.py --wrapper kvmtrap` + condition `phase8`. README "Phase 11-3
+result". ALL (every syscall, entry + return): 3,885 req/s vs Phase 8 717 and
+gdbstub 133 in the same session; records identical to Phase 8; about 1.5 us
+of QEMU CPU per stop; boot 2.6-2.8 s.
+
+Open from 11-3:
+- guest-side trap removal test (11's `--test-guest-untrap` used the gdbstub;
+  needs another way to redirect the guest, or a guest-side test image);
+- multi-vCPU (locking is in place, untested), a syscall blocking in another
+  thread while the exit trap is armed (emulation makes it safe in principle);
+- pending entries are dropped when QEMU exits (vmi_trap.py emitted them);
+- the selective "never while serving" claim now has a cheap fallback:
+  tracing every request is practical again, so "what to watch" is a policy
+  choice rather than a performance necessity.
+
 ## Next
 
 - **Behavioural check for removed or bypassed traps**, as in Phase 10-6's
@@ -78,7 +103,8 @@ constant per selection (README "Performance with startup not recorded").
 - **Decide what to watch.** Pick the "never while serving" syscalls for nginx
   (connect, socket, execve, ...; 33 occur only at startup in the ALL run). Measure normal operation with
   that set, and run a simulated attack that triggers it.
-- **Cost per stop.** Measured 2026-11-17 (README "Where the cost of one stop
+- **Cost per stop.** Superseded by 11-3 for the in-process path (about
+  1.5 us per stop). For the gdbstub path: measured 2026-11-17 (README "Where the cost of one stop
   goes"): about 150 us is QEMU's `vm_stop`/`vm_start` (outside any client),
   `g` is required (`P` is not applied without it; `p` does not help), each
   round trip is 30-60 us, Python adds about 35 us, and C-states are not the
