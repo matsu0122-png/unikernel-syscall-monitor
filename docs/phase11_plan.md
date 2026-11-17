@@ -101,6 +101,22 @@ Open from 11-3:
 
 ## Next
 
+- Decided 2026-11-18, not started:
+  - **Access to the records.** Jaeger (127.0.0.1:26686 UI/API, 14317
+    OTLP) has no authentication: any local user (7 accounts on this host)
+    can read every span with syscall arguments, or inject spans. JSONL and
+    runtime files are 0664 and protected only by the home directory (0750).
+    The gdbstub path also leaves a loopback gdbstub port open (guest memory
+    read/write for any local user); `mynginx` (11-2, NET) still has 1240
+    open. Ask before stopping `mynginx`.
+  - **Final performance evaluation** before writing up: `performance`
+    governor, pinned cores, keep-alive runs of 10 s or more, unrelated
+    containers stopped. The current base condition varies 30-40% (runs of
+    about 50 ms; later runs on an instance slower, possibly lwIP TIME_WAIT
+    search; not verified), so "NET is as fast as base" or overhead % cannot
+    be claimed yet. Phase 8's 14,501 req/s was c=5, one run per instance.
+  - Reader limit test: JSONL only (no OTLP) to locate the bottleneck.
+
 - **Behavioural check for removed or bypassed traps**, as in Phase 10-6's
   `accept4_mismatch`: host connections vs. trapped `accept4`. It catches what the
   1-second byte check misses: a removal reverted between checks, or a bypass of the
