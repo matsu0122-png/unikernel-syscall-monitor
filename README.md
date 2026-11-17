@@ -2761,6 +2761,30 @@ Not done yet: a guest that removes a trap itself (11's
 `--test-guest-untrap` needs the gdbstub), multi-vCPU, a syscall blocking
 in another thread while the exit trap is armed, long runs.
 
+### Every request in Jaeger with NETFD (2026-11-18)
+
+NETFD image, `qemu-kvmtrap.sh` with OTLP to Jaeger (v2, `/api/v3/traces`),
+1 instance: 3 curls + `ab -n 1200 -c 5` (8,969 req/s with export on).
+
+| | count |
+|---|---:|
+| accept4 in the JSONL | 1,205 |
+| `connection` traces in Jaeger (resource `vmitrace.instance` = this VM) | **1,205** |
+| spans in Jaeger (6,035 syscalls + 1,205 roots) | 7,240 |
+| traces closed by `close(fd)` / idle / incomplete | 1,205 / 0 / 0 |
+| ring records lost, alerts, ERROR spans | 0, 0, 0 |
+
+Every connection is one trace: `accept4 epoll_ctl recvfrom writev close`
+(1,200) or with `setsockopt recvfrom` (5, the curls), all attributed by fd.
+A sample: accept4 32.8 us (includes waiting), epoll_ctl 5.2 us, recvfrom
+5.6 us, writev 9.7 us, close 7.3 us; the whole connection 149 us. Mean trap
+handling in the library 2.2 us.
+
+Limit not tested here: a burst of 1,200 requests (the TIME_WAIT limit per
+instance) fits the exporter's 65,536-span queue; Phase 10-7 measured OTLP
+export at about 10,000 spans/s, so sustained NETFD at this rate (about 6
+spans per request) would exceed it.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol
