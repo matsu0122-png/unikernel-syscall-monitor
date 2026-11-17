@@ -243,6 +243,8 @@ def main():
                     help="trap/code check over HMP; 0 disables")
     ap.add_argument("--port", type=int)
     ap.add_argument("--stats", help="write final statistics (JSON) here")
+    ap.add_argument("--profile", action="store_true",
+                    help="time each RSP command (round trip, by command) into --stats")
     ap.add_argument("--test-guest-untrap", metavar="SYSCALL",
                     help="TEST ONLY: at this syscall's first hit, make the guest itself "
                          "(ring 0, CR0.WP cleared) write the original byte over its 0xCC, "
@@ -357,6 +359,8 @@ def main():
                 sp.end(end_time=t + 1000)    # 0 length: Jaeger adds a warning
 
     rsp = Rsp("127.0.0.1", port)
+    if a.profile:
+        rsp.prof = {}
     repair_q, repair_lock = set(), threading.Lock()
     stop = threading.Event()
 
@@ -567,6 +571,9 @@ def main():
         out.close()
         stats["wall_s"] = round(time.time() - t_start, 3)
         stats["round_trips"] = rsp.round_trips
+        if rsp.prof is not None:
+            stats["rsp_profile_us"] = {k: {"n": n, "mean": round(ns / n / 1000, 1)}
+                                       for k, (n, ns) in sorted(rsp.prof.items())}
         stats["hits"] = {names[k][0]: v for k, v in sorted(stats["hits"].items())}
         if stats["stops"]:
             stats["mean_stop_handling_us"] = round(stats["stop_handling_ns"] / stats["stops"] / 1000, 1)

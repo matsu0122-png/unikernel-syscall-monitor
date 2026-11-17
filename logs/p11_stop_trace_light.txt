@@ -1,0 +1,13 @@
+stops: 500
+segment                    n median us  mean us  p90 us
+stop_path                500        42     43.1      45
+client_before_g          500        43     44.4      46
+qemu_g                   500        38     39.5      41
+client_before_P          500        29     30.2      36
+qemu_P                   500         4      4.0       4
+client_before_c          500        27     28.1      29
+resume_path              500        86     87.9      93
+total_exit_to_run        500       269    277.2     299
+ioctls per stop in stop_path: 
+ioctls per stop in qemu_g: GET_VCPU_EVENTS 1.0, GET_MP_STATE 1.0, GET_REGS 1.0, GET_XSAVE 1.0, GET_XCRS 1.0, GET_SREGS 1.0, GET_MSRS 1.0, GET_LAPIC 1.0, GET_DEBUGREGS 1.0, GET_NESTED_STATE 1.0
+ioctls per stop in resume_path: SET_MSRS 2.0, KVMCLOCK_CTRL 1.0, SET_SREGS 1.0, SET_REGS 1.0, SET_XSAVE 1.0, SET_XCRS 1.0, SET_VCPU_EVENTS 1.0, SET_DEBUGREGS 1.0

@@ -11,3 +11,5 @@ agentless/traps.json
 agentless/experiments/*.o
 agentless/experiments/*.bin
 agentless/build/
+logs/p11_stop_cost_raw/
+agentless/profile/rsp_probe

@@ -2572,6 +2572,98 @@ Reading it:
   `restored` spans (search by span name), ERROR spans, connections whose span
   count differs from the usual, and `close_reason` `idle` or `fd_reused`.
 
+### Where the cost of one stop goes (2026-11-17)
+
+Question: selective trapping with startup unrecorded, yet NET runs at about
+8% of base. Why? Short answer: NET's syscalls are on every request's path
+(4 stops per request), and **one stop costs about 250-300 us whatever the
+client does**. Base nginx answers a keep-alive request in about 50 us, so a
+single stop per request already makes it about 6 times slower. Selection
+helps only when the selected syscalls are not hit, as with `rare`.
+
+Setup (`agentless/profile/`): one running instance of the unmodified image,
+**one trap on `writev`** (once per keep-alive request), `ab -k -c 1 -n 1000`.
+Each variant attaches, runs ab and detaches; 3 rounds, alternating order;
+medians. Added latency per stop = (latency - base latency) / stops per
+request. The client's own time per stop (stop reply received -> `c` sent)
+is measured inside it.
+- `rsp_probe.c`: a minimal C RSP client with the same command sequences as
+  `vmi_trap.py` (modes `null`, `read`, `ret`).
+- `stop_cost.py`: the driver. `logs/p11_stop_cost.csv`,
+  `logs/p11_stop_cost_c0.csv`.
+- `vmi_trap.py --profile`: round trip per RSP command into `--stats`.
+
+| variant | commands per stop | added per stop | in the client | outside the client |
+|---|---|---:|---:|---:|
+| C `null` | g, P, c | 256 us | 91 | 165 |
+| C `read` | g, m, P, c | 287 | 127 | 160 |
+| C `ret` (entry + exit stop) | g, m, Z0, P, c / g, z0, c | 262 | 129 | 133 |
+| Python `--no-ret` | g, m, P, c | 334 | 162 | 172 |
+| Python (default) | as C `ret` | 310 | 168 | 143 |
+
+Base: 51 us per request. Round trip per command in C: `g` 59 us, `m` 29,
+`P` 28, `Z0`/`z0` 35; in Python 62, 39, 38, 47.
+
+QEMU's side, from its trace events (QEMU started with `-msg timestamp=on
+-d trace:runstate_set -D FILE`, events enabled over HMP `trace-event`;
+`agentless/profile/stop_timeline.py`; C `null`, 500 stops;
+`logs/p11_stop_trace_light.*`). Tracing itself adds about 10%: 277 us from
+debug exit to the next `KVM_RUN` here, against 256 us added untraced.
+
+| segment (debug exit -> next KVM_RUN) | median | share |
+|---|---:|---:|
+| stop path: vCPU thread -> main loop, runstate `debug`, notifiers, `T05` sent | 42 us | 15% |
+| waiting for the client, 3 times (reply -> next command arrives) | 99 | 36% |
+| `g`: 10 KVM_GET_* ioctls on the vCPU thread | 38 | 14% |
+| `P` | 4 | 1% |
+| resume path: runstate `running`, notifiers, vCPU wakeup, registers written back | 86 | 31% |
+
+What QEMU does on every stop (`logs/p11_stop_trace_full.*`, all events):
+- `vm_stop`: virtio's ioeventfds are removed (6 `KVM_IOEVENTFD`), then
+  `KVM_GET_PIT2` and `KVM_GET_CLOCK`.
+- `g`: `GET_REGS`, `SREGS`, `XSAVE`, `XCRS`, `MSRS`, `LAPIC`, `DEBUGREGS`,
+  `NESTED_STATE`, `VCPU_EVENTS`, `MP_STATE`.
+- `vm_start`: `KVM_SET_CLOCK`, `SET_PIT2`, 6 `KVM_IOEVENTFD` again,
+  `KVMCLOCK_CTRL`, then on the vCPU thread `SET_SREGS`, `REGS`, `XSAVE`,
+  `XCRS`, `MSRS` (2), `VCPU_EVENTS`, `DEBUGREGS`, and `KVM_RUN`.
+
+Findings:
+1. **About 150 us per stop is outside any client**: QEMU's `vm_stop` and
+   `vm_start` (the gdbstub is all-stop: the whole VM changes run state, and
+   every device's state-change handler runs) and the hand-offs between the
+   vCPU thread and the main loop. A faster client cannot remove it.
+2. **`g` is required.** `P rip` alone is accepted but not applied: the
+   guest hits the same 0xCC again, endlessly (180,000 stops in 30 s).
+   QEMU writes registers back to KVM only when it synchronised them first,
+   and only `g` does that (`p` does not). So the minimum is 3 round trips
+   (`g`, `P`, `c`) and the full register sync and write-back.
+3. **Each RSP round trip costs about 30-60 us** on loopback, even from C.
+   QEMU's work is small (`P` 4 us); the rest is the two thread wake-ups per
+   round trip (client <-> QEMU main loop). `vmi_trap.py` sends 4 commands per
+   entry stop and 3 per exit stop.
+4. **Python adds about 35 us per stop** over C for the same commands (162
+   vs 127 us in the client), about 10 us per round trip. That is about 12%
+   of a stop.
+5. **CPU idle states are not the cause.** With a SCHED_IDLE busy loop on
+   every core (no deep C-state), the added cost per stop drops by 0-10%
+   (C `null` 256 -> 225 us, Python 310 -> 302 us; `logs/p11_stop_cost_c0.csv`).
+   Busy-polling the socket in the client changes c_null by 3%.
+6. **The exit trap doubles the stops** for little extra per stop (C `ret`
+   262 us per stop, 2 stops per syscall). Entry-only halves the cost when
+   return values are not needed.
+
+What could still be cut, by size:
+- Return values off where they are not needed: half the stops.
+- `m` can go: at the trap site the case block has already moved the
+  arguments into rdi, rsi, rdx, rcx, r8, r9, which `g` returns. Only the
+  `orig_rax` check (`nr_mismatch`) needs the saved registers. About 30-40 us.
+- A C (or other compiled) client: about 35 us.
+- Not removable through the gdbstub: about 150 us of `vm_stop`/`vm_start`
+  plus about 90 us for the 3 required round trips, i.e. **about 240 us per
+  stop**. Going lower needs a different path into KVM than QEMU's gdbstub
+  (a modified QEMU or a host kernel module), which this project excludes.
+  This is the reason the method has to rely on rare stops.
+
 ## Notes for later phases
 
 - `legacy/attach_gdbstub.py`'s `mon.sock` is plain QEMU **HMP** text protocol

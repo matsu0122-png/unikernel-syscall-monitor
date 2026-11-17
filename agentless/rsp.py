@@ -14,6 +14,7 @@ thread blocked in wait_stop().
 import socket
 import struct
 import threading
+import time
 
 # QEMU x86_64 register numbers (target.xml order)
 RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP = range(8)
@@ -34,6 +35,7 @@ class Rsp:
         self.ack = True
         self.send_lock = threading.Lock()
         self.round_trips = 0
+        self.prof = None        # {command letter: [n, total ns]} when profiling
 
     # -- framing -----------------------------------------------------------
     def _send(self, payload: bytes):
@@ -83,9 +85,18 @@ class Rsp:
         return bytes(out)
 
     def cmd(self, payload: str) -> str:
+        if self.prof is None:
+            self._send(payload.encode())
+            self.round_trips += 1
+            return self._recv_packet().decode()
+        t0 = time.monotonic_ns()
         self._send(payload.encode())
         self.round_trips += 1
-        return self._recv_packet().decode()
+        r = self._recv_packet().decode()
+        e = self.prof.setdefault(payload[:2] if payload[0] in "Zz" else payload[0], [0, 0])
+        e[0] += 1
+        e[1] += time.monotonic_ns() - t0
+        return r
 
     def ok(self, payload: str):
         r = self.cmd(payload)

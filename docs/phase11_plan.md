@@ -78,9 +78,12 @@ constant per selection (README "Performance with startup not recorded").
 - **Decide what to watch.** Pick the "never while serving" syscalls for nginx
   (connect, socket, execve, ...; 33 occur only at startup in the ALL run). Measure normal operation with
   that set, and run a simulated attack that triggers it.
-- **Cost per stop.** Fewer round trips: read r12 and rsp with `p` instead of `g`,
-  or batch the commands; keep the exit trap armed while hits are frequent. Measure
-  where the remaining ~140 us goes (KVM exit, QEMU gdbstub, TCP).
+- **Cost per stop.** Measured 2026-11-17 (README "Where the cost of one stop
+  goes"): about 150 us is QEMU's `vm_stop`/`vm_start` (outside any client),
+  `g` is required (`P` is not applied without it; `p` does not help), each
+  round trip is 30-60 us, Python adds about 35 us, and C-states are not the
+  cause. The floor through the gdbstub is about 240 us. Left to do: drop `m`
+  (arguments are already in rdi.. at the site), and maybe a C client.
 - **Untested paths:**
   - a syscall blocking in another thread (`exit_step_overs`);
   - the guest's own `int3` (`foreign_trap`);
